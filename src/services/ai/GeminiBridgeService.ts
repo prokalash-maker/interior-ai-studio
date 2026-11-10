@@ -12,8 +12,8 @@ export interface BridgeHandoffState {
 
 class GeminiBridgeService {
   /**
-   * Opens the official Gemini web application in the user's default browser.
-   * Uses personal signed-in Google account without any API keys or session extraction.
+   * Opens the optional embedded Gemini window, which has its own persisted browser session.
+   * First-time Google sign-in should use openGeminiExternal() in the system browser.
    */
   async openGeminiWeb(customUrl: string = 'https://gemini.google.com/'): Promise<boolean> {
     if ((window as any).electronAPI?.openGeminiBridgeWindow && customUrl === 'https://gemini.google.com/') {
@@ -23,15 +23,24 @@ class GeminiBridgeService {
       return false;
     }
     if (typeof window !== 'undefined') {
-      // In Electron or modern browsers, window.open with _blank delegates to OS default browser
+      // Browser-only fallback for development outside Electron.
       window.open(customUrl, '_blank');
       return true;
     }
     return false;
   }
 
-  openGeminiExternal(): void {
-    if (typeof window !== 'undefined') window.open('https://gemini.google.com/', '_blank');
+  async openGeminiExternal(): Promise<boolean> {
+    try {
+      if (window.electronAPI) {
+        await window.electronAPI.openExternal('https://gemini.google.com/');
+        return true;
+      }
+      return !!window.open('https://gemini.google.com/', '_blank');
+    } catch (error) {
+      console.error('Could not open Gemini in the browser:', error);
+      return false;
+    }
   }
 
   /**

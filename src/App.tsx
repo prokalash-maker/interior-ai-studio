@@ -46,10 +46,10 @@ export const App: React.FC = () => {
     checkApiKey();
 
     // 2. Check Auth Status: If first launch and not authenticated, show welcome auth modal
-    const authState = authService.getState();
-    if (!authState.isAuthenticated && !authState.isGuest) {
-      setIsAuthModalOpen(true);
-    }
+    void authService.whenReady().then(() => {
+      const authState = authService.getState();
+      if (!authState.isAuthenticated && !authState.isGuest) setIsAuthModalOpen(true);
+    });
 
     // 3. Load or initialize default project
     dbService.getAllProjects().then((projects) => {

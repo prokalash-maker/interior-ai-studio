@@ -17,7 +17,7 @@ export class GeminiBridgeProvider implements IAIProvider {
   async testConnection(): Promise<ConnectionTestResult> {
     return {
       success: true,
-      message: 'Gemini Bridge готов: прямое взаимодействие через официальный сайт gemini.google.com с вашим Google-аккаунтом.',
+      message: 'Gemini Bridge готов открыть сайт Gemini в системном браузере. Вход Google и доступность аккаунта проверяются на сайте.',
       latencyMs: 1,
       modelsFound: this.supportedModels,
     };
@@ -28,7 +28,8 @@ export class GeminiBridgeProvider implements IAIProvider {
     this.lastSourceImage = options.sourceImageBase64;
 
     // Open Gemini in browser
-    geminiBridgeService.openGeminiWeb();
+    const opened = await geminiBridgeService.openGeminiExternal();
+    if (!opened) throw new Error('Не удалось открыть Gemini в системном браузере.');
 
     // Copy prompt to clipboard automatically for instant user convenience
     if (options.prompt) {

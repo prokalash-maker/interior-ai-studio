@@ -637,7 +637,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     setBridgeMessage(opened ? t('bridge.windowReady') : t('bridge.openFailed'));
   };
 
-  const handleOpenGeminiExternal = () => {
+  const handleOpenGeminiExternal = async () => {
     bridgeContextInvalidatedRef.current = false;
     activeBridgeViewIdRef.current = selectedViewId;
     activeBridgePromptRef.current = generatedPrompt;
@@ -645,7 +645,9 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     sessionStorage.setItem('geminiBridgePendingProjectId', currentProject?.id || '');
     sessionStorage.setItem('geminiBridgePendingPrompt', generatedPrompt);
     sessionStorage.setItem('geminiBridgeOpenedAt', String(Date.now()));
-    geminiBridgeService.openGeminiExternal();
+    setBridgeMessage(t('bridge.opening'));
+    const opened = await geminiBridgeService.openGeminiExternal();
+    setBridgeMessage(opened ? t('bridge.externalReady') : t('bridge.openFailed'));
   };
 
   const handleImportDownloaded = async () => {
@@ -966,17 +968,17 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
           {/* Launch Gemini Button */}
           <div className="pt-2 border-t border-studio-border/60">
             <button
-              onClick={handleOpenGemini}
+              onClick={handleOpenGeminiExternal}
               disabled={!sourceImage || sourceImageFailed}
               title={!sourceImage || sourceImageFailed ? t('bridge.sourceRequired') : undefined}
               className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold transition-all shadow-md shadow-emerald-600/20 active:scale-[0.98]"
             >
               <ExternalLink className="w-4 h-4" />
-                <span>{t('bridge.openEmbedded')}</span>
+                <span>{t('bridge.openExternal')}</span>
             </button>
-            <button onClick={handleOpenGeminiExternal} disabled={!sourceImage || sourceImageFailed} title={!sourceImage || sourceImageFailed ? t('bridge.sourceRequired') : undefined} className="w-full mt-1 flex items-center justify-center space-x-2 py-2 px-3 rounded-lg bg-studio-surfaceLight hover:bg-studio-surfaceHover disabled:opacity-50 disabled:cursor-not-allowed border border-studio-border text-[11px] font-medium text-studio-textMuted hover:text-white">
+            <button onClick={handleOpenGemini} disabled={!sourceImage || sourceImageFailed} title={!sourceImage || sourceImageFailed ? t('bridge.sourceRequired') : undefined} className="w-full mt-1 flex items-center justify-center space-x-2 py-2 px-3 rounded-lg bg-studio-surfaceLight hover:bg-studio-surfaceHover disabled:opacity-50 disabled:cursor-not-allowed border border-studio-border text-[11px] font-medium text-studio-textMuted hover:text-white">
               <ExternalLink className="w-3.5 h-3.5" />
-              <span>{t('bridge.openExternal')}</span>
+              <span>{t('bridge.openEmbedded')}</span>
             </button>
             {(!sourceImage || sourceImageFailed) && <div className="text-[10px] text-center text-amber-300">{t('bridge.sourceRequired')}</div>}
             {bridgeMessage && <div className="text-[10px] text-center text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-lg">{bridgeMessage}</div>}

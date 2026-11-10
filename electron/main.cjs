@@ -5,6 +5,7 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const initSqlJs = require('sql.js');
+const { startGoogleOAuth, refreshGoogleSession } = require('./googleAuth.cjs');
 
 // Keep the existing Windows profile directory stable across the product rename.
 // The SQLite database, secure settings and project assets live below this path.
@@ -238,7 +239,7 @@ function getGeminiDownloadRoot() {
   return dir;
 }
 
-function openGeminiBridgeWindow() {
+async function openGeminiBridgeWindow() {
   if (geminiWindow && !geminiWindow.isDestroyed()) {
     geminiWindow.show();
     geminiWindow.focus();
@@ -289,7 +290,7 @@ function openGeminiBridgeWindow() {
     return { action: 'deny' };
   });
   geminiWindow.on('closed', () => { geminiWindow = null; });
-  geminiWindow.loadURL('https://gemini.google.com/');
+  await geminiWindow.loadURL('https://gemini.google.com/');
   return true;
 }
 
@@ -331,8 +332,9 @@ function decryptData(ciphertext) {
 
 // ---------------- IPC Setup ----------------
 function setupIPC() {
+  const rendererSecureKeys = new Set(['gemini_api_key', 'krea_api_key', 'google_oauth_client_id', 'local_user_profile']);
   ipcMain.handle('gemini:openWindow', async () => {
-    try { return { success: openGeminiBridgeWindow() }; }
+    try { return { success: await openGeminiBridgeWindow() }; }
     catch (error) { return { success: false, error: error.message || 'Не удалось открыть Gemini.' }; }
   });
 
@@ -1335,6 +1337,7 @@ function setupIPC() {
   // Secure Storage Items
   ipcMain.handle('secure:save', async (event, key, value) => {
     try {
+      if (!rendererSecureKeys.has(key) || typeof value !== 'string') return false;
       const encrypted = encryptData(value);
       db.run('INSERT OR REPLACE INTO secure_kv (key, value) VALUES (?, ?)', [key, encrypted]);
       saveDatabaseFile();
@@ -1347,6 +1350,7 @@ function setupIPC() {
 
   ipcMain.handle('secure:get', async (event, key) => {
     try {
+      if (!rendererSecureKeys.has(key)) return null;
       const stmt = db.prepare('SELECT value FROM secure_kv WHERE key = ?');
       stmt.bind([key]);
       if (stmt.step()) {
@@ -1364,6 +1368,7 @@ function setupIPC() {
 
   ipcMain.handle('secure:delete', async (event, key) => {
     try {
+      if (!rendererSecureKeys.has(key)) return false;
       db.run('DELETE FROM secure_kv WHERE key = ?', [key]);
       saveDatabaseFile();
       return true;
@@ -1420,201 +1425,102 @@ function setupIPC() {
     return true;
   });
 
-  // Google OAuth 2.0 PKCE Desktop Flow
-  ipcMain.handle('auth:googleOAuth', async (event, passedClientId) => {
-    // Check if client ID is configured
-    let clientId = passedClientId;
-    if (!clientId) {
-      const stmt = db.prepare("SELECT value FROM secure_kv WHERE key = 'google_oauth_client_id'");
-      if (stmt.step()) {
-        const row = stmt.getAsObject();
-        clientId = decryptData(row.value);
-      }
+  // Google identity uses the system browser. Tokens stay in the encrypted main-process store.
+  const readAuthRecord = (key) => {
+    const stmt = db.prepare('SELECT value FROM secure_kv WHERE key = ?');
+    try {
+      stmt.bind([key]);
+      return stmt.step() ? decryptData(stmt.getAsObject().value) : null;
+    } finally {
       stmt.free();
     }
+  };
+  const writeAuthRecord = (key, value) => {
+    db.run('INSERT OR REPLACE INTO secure_kv (key, value) VALUES (?, ?)', [key, encryptData(value)]);
+    saveDatabaseFile();
+  };
+  let googleOAuthInProgress = false;
 
-    if (!clientId || !clientId.includes('.apps.googleusercontent.com') || clientId.includes('demo.apps.googleusercontent.com')) {
-      return {
-        success: false,
-        requiresConfig: true,
-        error: 'Google OAuth Client ID не настроен. Для авторизации через внешний браузер укажите валидный Desktop Client ID из Google Cloud Console (xxxx.apps.googleusercontent.com), либо войдите в 1 клик с локальным профилем.',
-      };
+  ipcMain.handle('auth:googleOAuth', async (_event, passedClientId) => {
+    const clientId = String(passedClientId || readAuthRecord('google_oauth_client_id') || '').trim();
+    if (!/^\d+-[a-z0-9-]+\.apps\.googleusercontent\.com$/i.test(clientId)) {
+      return { success: false, requiresConfig: true, error: 'Укажите OAuth Client ID типа Desktop application из Google Cloud Console.' };
     }
-
-    return new Promise((resolve) => {
-      // Loopback HTTP server on port 45231
-      const port = 45231;
-      const redirectUri = `http://127.0.0.1:${port}/oauth2callback`;
-
-      // Helper for PKCE
-      const codeVerifier = crypto.randomBytes(32).toString('base64url');
-      const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
-      const state = crypto.randomBytes(16).toString('hex');
-
-      let server = null;
-      let timeoutId = null;
-
-      const cleanup = () => {
-        if (timeoutId) clearTimeout(timeoutId);
-        if (server) {
-          try {
-            server.close();
-          } catch (e) {}
-        }
-      };
-
-      server = http.createServer(async (req, res) => {
-        const reqUrl = new URL(req.url, `http://127.0.0.1:${port}`);
-        if (reqUrl.pathname === '/oauth2callback') {
-          const code = reqUrl.searchParams.get('code');
-          const returnedState = reqUrl.searchParams.get('state');
-          const error = reqUrl.searchParams.get('error');
-
-          if (error) {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            res.end(`
-              <html><body style="background:#0d0f12;color:#f1f5f9;font-family:sans-serif;padding:40px;text-align:center;">
-                <h2 style="color:#ef4444;">Авторизация отменена</h2>
-                <p>Вы можете закрыть эту вкладку и вернуться в Interior AI Studio.</p>
-              </body></html>
-            `);
-            cleanup();
-            resolve({ success: false, error: 'Авторизация отменена пользователем' });
-            return;
-          }
-
-          if (code && returnedState === state) {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            res.end(`
-              <html><body style="background:#0d0f12;color:#f1f5f9;font-family:sans-serif;padding:40px;text-align:center;">
-                <h2 style="color:#10b981;">✓ Авторизация успешна!</h2>
-                <p>Возвращайтесь в Interior AI Studio. Это окно можно закрыть.</p>
-                <script>setTimeout(() => window.close(), 1500);</script>
-              </body></html>
-            `);
-
-            cleanup();
-
-            // Try exchange code for tokens via Google token endpoint
-            try {
-              const tokenPostData = new URLSearchParams({
-                code,
-                client_id: clientId,
-                redirect_uri: redirectUri,
-                grant_type: 'authorization_code',
-                code_verifier: codeVerifier,
-              }).toString();
-
-              const tokenReq = https.request('https://oauth2.googleapis.com/token', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/x-www-form-urlencoded',
-                  'Content-Length': Buffer.byteLength(tokenPostData),
-                },
-              }, (tokenRes) => {
-                let tokenBody = '';
-                tokenRes.on('data', chunk => { tokenBody += chunk; });
-                tokenRes.on('end', async () => {
-                  try {
-                    const tokenJson = JSON.parse(tokenBody);
-                    if (tokenJson.access_token) {
-                      // Fetch user info from Google
-                      https.get('https://www.googleapis.com/oauth2/v3/userinfo', {
-                        headers: { Authorization: `Bearer ${tokenJson.access_token}` },
-                      }, (userRes) => {
-                        let userBody = '';
-                        userRes.on('data', d => { userBody += d; });
-                        userRes.on('end', () => {
-                          try {
-                            const userJson = JSON.parse(userBody);
-                            resolve({
-                              success: true,
-                              user: {
-                                id: userJson.sub || 'google_user',
-                                name: userJson.name || 'Google Designer',
-                                email: userJson.email || 'designer@studio',
-                                picture: userJson.picture || '',
-                              },
-                              accessToken: tokenJson.access_token,
-                            });
-                          } catch (e) {
-                            resolve({
-                              success: true,
-                              user: { id: 'user', name: 'Google Designer', email: 'designer@studio' },
-                              accessToken: tokenJson.access_token,
-                            });
-                          }
-                        });
-                      });
-                      return;
-                    }
-                  } catch (e) {}
-                  resolve({
-                    success: true,
-                    user: { id: 'user', name: 'Google Designer', email: 'designer@studio' },
-                  });
-                });
-              });
-              tokenReq.write(tokenPostData);
-              tokenReq.end();
-            } catch (err) {
-              resolve({
-                success: true,
-                user: { id: 'user', name: 'Google Designer', email: 'designer@studio' },
-              });
-            }
-            return;
-          }
-        }
-
-        res.writeHead(404);
-        res.end();
+    if (googleOAuthInProgress) {
+      return { success: false, error: 'Вход Google уже выполняется. Дождитесь результата в браузере.' };
+    }
+    googleOAuthInProgress = true;
+    try {
+      const result = await startGoogleOAuth(clientId, (url) => shell.openExternal(url), async (verified) => {
+        const record = {
+          verifiedGoogle: true,
+          clientId,
+          user: verified.user,
+          accessToken: verified.accessToken,
+          refreshToken: verified.refreshToken,
+          expiresAt: verified.expiresAt,
+        };
+        writeAuthRecord('google_oauth_session', JSON.stringify(record));
+        writeAuthRecord('google_oauth_client_id', clientId);
+        db.run("DELETE FROM secure_kv WHERE key = 'google_user_session'");
+        saveDatabaseFile();
       });
-
-      server.listen(port, '127.0.0.1', () => {
-        const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-          `response_type=code` +
-          `&client_id=${encodeURIComponent(clientId)}` +
-          `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-          `&scope=${encodeURIComponent('openid email profile')}` +
-          `&state=${state}` +
-          `&code_challenge=${codeChallenge}` +
-          `&code_challenge_method=S256`;
-
-        shell.openExternal(authUrl).catch(() => {});
-      });
-
-      // 60-second timeout for user action
-      timeoutId = setTimeout(() => {
-        cleanup();
-        resolve({
-          success: false,
-          error: 'Время ожидания авторизации истекло. Закройте окно и повторите вход.',
-        });
-      }, 60000);
-    });
+      if (!result.success) return result;
+      return { success: true, user: result.user };
+    } catch (error) {
+      return { success: false, error: error.message || 'Не удалось завершить вход Google.' };
+    } finally {
+      googleOAuthInProgress = false;
+    }
   });
 
-  ipcMain.handle('auth:saveProfile', async (event, profileData) => {
+  ipcMain.handle('auth:getGoogleSession', async () => {
     try {
-      const encrypted = encryptData(JSON.stringify(profileData));
-      db.run("INSERT OR REPLACE INTO secure_kv (key, value) VALUES ('google_user_session', ?)", [encrypted]);
-      saveDatabaseFile();
+      const legacy = readAuthRecord('google_user_session');
+      if (legacy) {
+        try {
+          const parsed = JSON.parse(legacy);
+          if (parsed.user?.name && !readAuthRecord('local_user_profile')) {
+            writeAuthRecord('local_user_profile', JSON.stringify({ user: parsed.user }));
+          }
+        } catch (_) { /* Ignore malformed legacy profiles. */ }
+        db.run("DELETE FROM secure_kv WHERE key = 'google_user_session'");
+        saveDatabaseFile();
+      }
+      const stored = readAuthRecord('google_oauth_session');
+      if (!stored) return { success: false };
+      let record = JSON.parse(stored);
+      if (!record.verifiedGoogle || !record.user?.id || !record.user?.email || !record.clientId) {
+        return { success: false, error: 'Сохранённая сессия Google недействительна. Повторите вход.' };
+      }
+      if (!record.accessToken || !Number.isFinite(record.expiresAt) || record.expiresAt < Date.now() + 60000) {
+        record = await refreshGoogleSession(record);
+        if (!record) return { success: false, error: 'Срок действия сессии Google истёк. Повторите вход.' };
+        writeAuthRecord('google_oauth_session', JSON.stringify(record));
+      }
+      return { success: true, user: record.user };
+    } catch (error) {
+      return { success: false, error: error.message || 'Не удалось проверить сессию Google.' };
+    }
+  });
+
+  // Local profiles are stored separately and never presented as Google authorization.
+  ipcMain.handle('auth:saveProfile', async (_event, profileData) => {
+    try {
+      if (!profileData?.user?.name) return false;
+      writeAuthRecord('local_user_profile', JSON.stringify({ user: profileData.user }));
       return true;
-    } catch (e) {
-      console.error('Failed to save profile:', e);
+    } catch (_) {
       return false;
     }
   });
 
   ipcMain.handle('auth:logout', async () => {
-    db.run("DELETE FROM secure_kv WHERE key = 'google_user_session'");
-    db.run("DELETE FROM secure_kv WHERE key = 'google_tokens'");
+    db.run("DELETE FROM secure_kv WHERE key IN ('google_oauth_session', 'google_user_session', 'google_tokens', 'local_user_profile')");
     saveDatabaseFile();
     return true;
   });
 }
-
 // ---------------- App Lifecycle ----------------
 app.whenReady().then(async () => {
   await initDatabase();

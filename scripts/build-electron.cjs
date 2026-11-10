@@ -16,4 +16,9 @@ fs.copyFileSync(
   path.resolve(outDir, 'preload.cjs')
 );
 
+fs.copyFileSync(
+  path.resolve(__dirname, '../electron/googleAuth.cjs'),
+  path.resolve(outDir, 'googleAuth.cjs')
+);
+
 console.log('Electron scripts prepared successfully in dist-electron/');

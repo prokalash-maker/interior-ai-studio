@@ -9,48 +9,50 @@ class AuthService {
     expiresAt: null,
   };
   private listeners: Array<(state: AuthState) => void> = [];
+  private restorePromise: Promise<void>;
 
   constructor() {
-    this.restoreSession();
+    this.restorePromise = this.restoreSession();
   }
 
-  private async restoreSession() {
+  async whenReady(): Promise<void> {
+    await this.restorePromise;
+  }
+
+  private async restoreSession(): Promise<void> {
     try {
       if (window.electronAPI) {
-        const savedAuth = await window.electronAPI.getSecureItem('google_user_session');
-        if (savedAuth) {
-          const parsed = JSON.parse(savedAuth);
-          this.state = {
-            isAuthenticated: true,
-            isGuest: false,
-            user: parsed.user,
-            accessToken: parsed.accessToken,
-            expiresAt: parsed.expiresAt,
-          };
+        const google = await window.electronAPI.getGoogleSession();
+        if (google.success && google.user) {
+          this.state = { isAuthenticated: true, isGuest: false, user: google.user, accessToken: null, expiresAt: null };
           this.notify();
           return;
         }
-      }
 
-      const localGuest = localStorage.getItem('interior_ai_guest_mode');
-      if (localGuest === 'true') {
-        this.setGuestMode();
+        const local = await window.electronAPI.getSecureItem('local_user_profile');
+        if (local) {
+          const parsed = JSON.parse(local);
+          if (parsed.user?.name) {
+            this.state = { isAuthenticated: false, isGuest: true, user: parsed.user, accessToken: null, expiresAt: null };
+            this.notify();
+            return;
+          }
+        }
       }
-    } catch (e) {
-      console.warn('Failed to restore auth session:', e);
+      if (localStorage.getItem('interior_ai_guest_mode') === 'true') this.setGuestMode();
+    } catch (error) {
+      console.warn('Failed to restore account profile:', error);
     }
   }
 
   subscribe(listener: (state: AuthState) => void): () => void {
     this.listeners.push(listener);
-    listener(this.state);
-    return () => {
-      this.listeners = this.listeners.filter((l) => l !== listener);
-    };
+    listener({ ...this.state });
+    return () => { this.listeners = this.listeners.filter((item) => item !== listener); };
   }
 
-  private notify() {
-    this.listeners.forEach((l) => l({ ...this.state }));
+  private notify(): void {
+    this.listeners.forEach((listener) => listener({ ...this.state }));
   }
 
   getState(): AuthState {
@@ -58,88 +60,41 @@ class AuthService {
   }
 
   async loginWithGoogle(clientId?: string): Promise<{ success: boolean; requiresConfig?: boolean; error?: string }> {
-    if (window.electronAPI) {
-      try {
-        const result = await window.electronAPI.startGoogleOAuth(clientId);
-        if (result.success && result.user) {
-          this.state = {
-            isAuthenticated: true,
-            isGuest: false,
-            user: result.user,
-            accessToken: result.accessToken || null,
-            expiresAt: Date.now() + 3600 * 1000,
-          };
-          await window.electronAPI.saveProfile({
-            user: result.user,
-            accessToken: result.accessToken,
-            expiresAt: this.state.expiresAt,
-          });
-          localStorage.removeItem('interior_ai_guest_mode');
-          this.notify();
-          return { success: true };
-        } else {
-          return {
-            success: false,
-            requiresConfig: result.requiresConfig,
-            error: result.error || 'Авторизация отменена',
-          };
-        }
-      } catch (err: any) {
-        return { success: false, error: err.message };
+    await this.whenReady();
+    if (!window.electronAPI) return { success: false, error: 'Вход Google доступен только в настольном приложении.' };
+    try {
+      const result = await window.electronAPI.startGoogleOAuth(clientId);
+      if (!result.success || !result.user) {
+        return { success: false, requiresConfig: result.requiresConfig, error: result.error || 'Вход Google не завершён.' };
       }
+      this.state = { isAuthenticated: true, isGuest: false, user: result.user, accessToken: null, expiresAt: null };
+      await window.electronAPI.deleteSecureItem('local_user_profile');
+      localStorage.removeItem('interior_ai_guest_mode');
+      this.notify();
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Не удалось войти в Google.' };
     }
-
-    // Web simulation fallback
-    const simulatedUser: GoogleUser = {
-      id: 'google_web_user',
-      name: 'ProKalash',
-      email: 'ProKalash@gmail.com',
-      picture: '',
-    };
-    this.state = {
-      isAuthenticated: true,
-      isGuest: false,
-      user: simulatedUser,
-      accessToken: 'demo_token',
-      expiresAt: Date.now() + 3600 * 1000,
-    };
-    this.notify();
-    return { success: true };
   }
 
-  async setUserProfile(name: string, email: string) {
+  async setUserProfile(name: string, email: string): Promise<void> {
+    await this.whenReady();
     const user: GoogleUser = {
-      id: 'user_' + Date.now(),
-      name: name || 'Дизайнер Интерьеров',
-      email: email || 'designer@studio',
+      id: 'local_profile',
+      name: name.trim() || 'Дизайнер',
+      email: email.trim(),
     };
-    this.state = {
-      isAuthenticated: true,
-      isGuest: false,
-      user,
-      accessToken: 'local_token',
-      expiresAt: Date.now() + 86400 * 1000 * 30, // 30 days
-    };
-    if (window.electronAPI) {
-      await window.electronAPI.saveProfile({
-        user,
-        accessToken: 'local_token',
-        expiresAt: this.state.expiresAt,
-      });
-    }
-    localStorage.removeItem('interior_ai_guest_mode');
+    if (window.electronAPI) await window.electronAPI.saveProfile({ user });
+    this.state = { isAuthenticated: false, isGuest: true, user, accessToken: null, expiresAt: null };
+    localStorage.setItem('interior_ai_guest_mode', 'true');
     this.notify();
   }
 
-  setGuestMode() {
+  setGuestMode(): void {
     this.state = {
       isAuthenticated: false,
       isGuest: true,
-      user: {
-        id: 'guest_user',
-        name: 'Локальный дизайнер (Офлайн)',
-        email: 'local@device',
-      },
+      user: { id: 'guest_user', name: 'Локальный дизайнер (Офлайн)', email: '' },
       accessToken: null,
       expiresAt: null,
     };
@@ -148,18 +103,9 @@ class AuthService {
   }
 
   async logout(): Promise<void> {
-    if (window.electronAPI) {
-      await window.electronAPI.deleteSecureItem('google_user_session');
-      await window.electronAPI.logoutGoogle();
-    }
+    if (window.electronAPI) await window.electronAPI.logoutGoogle();
     localStorage.removeItem('interior_ai_guest_mode');
-    this.state = {
-      isAuthenticated: false,
-      isGuest: false,
-      user: null,
-      accessToken: null,
-      expiresAt: null,
-    };
+    this.state = { isAuthenticated: false, isGuest: false, user: null, accessToken: null, expiresAt: null };
     this.notify();
   }
 }

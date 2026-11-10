@@ -211,6 +211,11 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             </span>
             <ShieldCheck className="w-3 h-3 text-studio-success" />
           </button>
+        ) : authState.isGuest && authState.user ? (
+          <button onClick={onOpenSettings} title={t('settings.localProfileActive')} className="flex items-center gap-1.5 px-2 py-1 rounded bg-studio-surfaceHover hover:bg-studio-border text-studio-textMuted transition-colors">
+            <User className="w-3.5 h-3.5" />
+            <span className="text-[11px] font-medium max-w-[120px] truncate">{authState.user.name}</span>
+          </button>
         ) : (
           <button
             onClick={onOpenAuth}

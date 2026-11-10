@@ -131,6 +131,9 @@ export const SettingsView: React.FC = () => {
 
   // Auth State
   const [authState, setAuthState] = useState<AuthState>(authService.getState());
+  const [googleClientId, setGoogleClientId] = useState('');
+  const [googleAuthBusy, setGoogleAuthBusy] = useState(false);
+  const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = authService.subscribe(setAuthState);
@@ -147,6 +150,9 @@ export const SettingsView: React.FC = () => {
 
     // Load saved API keys from secure storage
     if (window.electronAPI) {
+      window.electronAPI.getSecureItem('google_oauth_client_id').then((saved) => {
+        if (saved) setGoogleClientId(saved);
+      });
       window.electronAPI.getSecureItem('gemini_api_key').then((savedKey) => {
         if (savedKey) {
           setApiKey(savedKey);
@@ -530,6 +536,17 @@ export const SettingsView: React.FC = () => {
 
   const handleGoogleLogout = async () => {
     await authService.logout();
+  };
+
+  const handleGoogleLogin = async () => {
+    setGoogleAuthBusy(true);
+    setGoogleAuthError(null);
+    try {
+      const result = await authService.loginWithGoogle(googleClientId.trim() || undefined);
+      if (!result.success) setGoogleAuthError(result.error || t('settings.oauthFailed'));
+    } finally {
+      setGoogleAuthBusy(false);
+    }
   };
 
   const handleSaveBudgetLimit = (limit: number) => {
@@ -2025,6 +2042,11 @@ export const SettingsView: React.FC = () => {
                 </div>
               ) : (
                 <div className="space-y-4">
+                  {authState.isGuest && authState.user && (
+                    <div className="rounded-lg border border-studio-border bg-studio-bg px-3 py-2 text-xs text-studio-textMuted">
+                      {t('settings.localProfileActive')}: <strong className="text-white">{authState.user.name}</strong>
+                    </div>
+                  )}
                   <div className="text-center py-2 space-y-2">
                     <div className="w-12 h-12 rounded-full bg-studio-surfaceHover mx-auto flex items-center justify-center text-studio-textMuted">
                       <User className="w-6 h-6" />
@@ -2054,7 +2076,7 @@ export const SettingsView: React.FC = () => {
                         <label className="text-[10px] text-studio-textMuted block mb-1">{t('settings.designerEmail')}</label>
                         <input
                           type="text"
-                          defaultValue="ProKalash@gmail.com"
+                          defaultValue=""
                           id="settings_profile_email"
                           className="w-full bg-studio-surface border border-studio-border rounded p-1.5 text-xs text-white"
                         />
@@ -2063,8 +2085,8 @@ export const SettingsView: React.FC = () => {
                     <button
                       onClick={() => {
                         const name = (document.getElementById('settings_profile_name') as HTMLInputElement)?.value || 'ProKalash';
-                        const email = (document.getElementById('settings_profile_email') as HTMLInputElement)?.value || 'ProKalash@gmail.com';
-                        authService.setUserProfile(name, email);
+                        const email = (document.getElementById('settings_profile_email') as HTMLInputElement)?.value || '';
+                        void authService.setUserProfile(name, email);
                       }}
                       className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow-md transition-colors"
                     >
@@ -2085,26 +2107,22 @@ export const SettingsView: React.FC = () => {
                       <input
                         type="text"
                         placeholder="123456789-abc.apps.googleusercontent.com"
-                        id="google_client_id_input"
+                        value={googleClientId}
+                        onChange={(event) => setGoogleClientId(event.target.value)}
                         className="w-full bg-studio-surface border border-studio-border focus:border-indigo-500 rounded p-1.5 font-mono text-[11px] text-white"
                       />
                     </div>
-                    <button
-                      onClick={async () => {
-                        const clientId = (document.getElementById('google_client_id_input') as HTMLInputElement)?.value.trim();
-                        if (clientId) {
-                          if (window.electronAPI) {
-                            await window.electronAPI.saveSecureItem('google_oauth_client_id', clientId);
-                          }
-                          await authService.loginWithGoogle(clientId);
-                        } else {
-                          alert('Please enter a Google OAuth Client ID');
-                        }
-                      }}
-                      className="px-3 py-1.5 bg-studio-surfaceHover hover:bg-studio-border border border-studio-border text-studio-text rounded text-xs font-medium transition-colors"
-                    >
-                      {t('settings.saveAndLoginBrowser')}
+                    <button type="button" onClick={() => window.electronAPI?.openExternal('https://console.cloud.google.com/apis/credentials')} className="text-[11px] text-indigo-300 hover:underline">
+                      {t('settings.openGoogleCredentials')}
                     </button>
+                    <button
+                      onClick={handleGoogleLogin}
+                      disabled={googleAuthBusy}
+                      className="px-3 py-1.5 bg-studio-surfaceHover hover:bg-studio-border disabled:opacity-50 border border-studio-border text-studio-text rounded text-xs font-medium transition-colors"
+                    >
+                      {googleAuthBusy ? t('settings.oauthWaiting') : t('settings.saveAndLoginBrowser')}
+                    </button>
+                    {googleAuthError && <p role="alert" className="text-[11px] text-studio-danger">{googleAuthError}</p>}
                   </div>
                 </div>
               )}
