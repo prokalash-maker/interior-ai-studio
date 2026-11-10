@@ -6,6 +6,7 @@ const https = require('https');
 const crypto = require('crypto');
 const initSqlJs = require('sql.js');
 const { startGoogleOAuth, refreshGoogleSession } = require('./googleAuth.cjs');
+const { resolveOAuthConfig, isValidClientId } = require('./oauthConfig.cjs');
 
 // Keep the existing Windows profile directory stable across the product rename.
 // The SQLite database, secure settings and project assets live below this path.
@@ -1441,27 +1442,61 @@ function setupIPC() {
   };
   let googleOAuthInProgress = false;
 
-  ipcMain.handle('auth:googleOAuth', async (_event, credentials = {}) => {
-    const clientId = String(credentials.clientId || readAuthRecord('google_oauth_client_id') || '').trim();
-    const clientSecret = String(credentials.clientSecret || readAuthRecord('google_oauth_client_secret') || '').trim();
-    if (!/^\d+-[a-z0-9-]+\.apps\.googleusercontent\.com$/i.test(clientId)) {
-      return { success: false, requiresConfig: true, error: 'Укажите OAuth Client ID типа Desktop application из Google Cloud Console.' };
+  ipcMain.handle('auth:getOAuthConfigStatus', async () => {
+    try {
+      const config = resolveOAuthConfig({ readStoredRecord });
+      const isConfigured = Boolean(config.clientId && isValidClientId(config.clientId));
+      return {
+        isConfigured,
+        source: config.source,
+        maskedClientId: isConfigured ? (config.clientId.substring(0, 10) + '...' + config.clientId.slice(-22)) : '',
+        hasClientSecret: Boolean(config.clientSecret),
+      };
+    } catch (error) {
+      return {
+        isConfigured: false,
+        source: 'error',
+        maskedClientId: '',
+        hasClientSecret: false,
+      };
     }
-    if (clientSecret.length > 512) {
-      return { success: false, requiresConfig: true, error: 'Client Secret слишком длинный. Проверьте значение из Google Cloud Console.' };
+  });
+
+  ipcMain.handle('auth:googleOAuth', async (_event, developerOverride = {}) => {
+    const config = resolveOAuthConfig({
+      explicitClientId: developerOverride.clientId,
+      explicitClientSecret: developerOverride.clientSecret,
+      readStoredRecord,
+    });
+
+    if (!config.clientId || !isValidClientId(config.clientId)) {
+      return {
+        success: false,
+        notConfigured: true,
+        error: 'Вход через Google временно недоступен: OAuth Desktop Client приложения не настроен разработчиком.',
+      };
+    }
+    if (config.clientSecret && config.clientSecret.length > 512) {
+      return { success: false, error: 'Client Secret слишком длинный. Проверьте значение из Google Cloud Console.' };
     }
     if (googleOAuthInProgress) {
       return { success: false, error: 'Вход Google уже выполняется. Дождитесь результата в браузере.' };
     }
     googleOAuthInProgress = true;
     try {
-      writeAuthRecord('google_oauth_client_id', clientId);
-      if (clientSecret) writeAuthRecord('google_oauth_client_secret', clientSecret);
-      const result = await startGoogleOAuth(clientId, clientSecret, (url) => shell.openExternal(url), async (verified) => {
+      if (developerOverride.clientId && developerOverride.saveAsDefault) {
+        writeAuthRecord('google_oauth_client_id', config.clientId);
+        if (config.clientSecret) {
+          writeAuthRecord('google_oauth_client_secret', config.clientSecret);
+        } else {
+          db.run("DELETE FROM secure_kv WHERE key = 'google_oauth_client_secret'");
+        }
+      }
+      const result = await startGoogleOAuth(config.clientId, config.clientSecret, (url) => shell.openExternal(url), async (verified) => {
         const record = {
           verifiedGoogle: true,
-          clientId,
-          clientSecret: clientSecret || undefined,
+          clientId: config.clientId,
+          clientSecret: config.clientSecret || undefined,
           user: verified.user,
           accessToken: verified.accessToken,
           refreshToken: verified.refreshToken,

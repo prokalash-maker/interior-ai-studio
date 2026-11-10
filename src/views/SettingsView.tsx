@@ -25,6 +25,9 @@ import {
   RotateCw,
   HardDrive,
   SlidersHorizontal,
+  ChevronDown,
+  ChevronUp,
+  Loader2,
 } from 'lucide-react';
 import { geminiProvider } from '../services/ai/GeminiProvider';
 import { kreaProvider } from '../services/ai/KreaProvider';
@@ -135,6 +138,8 @@ export const SettingsView: React.FC = () => {
   const [googleClientSecret, setGoogleClientSecret] = useState('');
   const [googleAuthBusy, setGoogleAuthBusy] = useState(false);
   const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
+  const [oauthConfigStatus, setOAuthConfigStatus] = useState<{ isConfigured: boolean; source: string; maskedClientId: string; hasClientSecret: boolean } | null>(null);
+  const [showDevOAuth, setShowDevOAuth] = useState(false);
 
   useEffect(() => {
     const unsub = authService.subscribe(setAuthState);
@@ -151,6 +156,9 @@ export const SettingsView: React.FC = () => {
 
     // Load saved API keys from secure storage
     if (window.electronAPI) {
+      window.electronAPI.getOAuthConfigStatus?.().then((st) => {
+        if (st) setOAuthConfigStatus(st);
+      }).catch(() => {});
       window.electronAPI.getSecureItem('google_oauth_client_id').then((saved) => {
         if (saved) setGoogleClientId(saved);
       });
@@ -542,15 +550,37 @@ export const SettingsView: React.FC = () => {
     await authService.logout();
   };
 
-  const handleGoogleLogin = async () => {
+  const handleStandardGoogleLogin = async () => {
+    setGoogleAuthBusy(true);
+    setGoogleAuthError(null);
+    try {
+      const result = await authService.loginWithGoogle();
+      if (!result.success) {
+        setGoogleAuthError(result.error || t('settings.oauthFailed'));
+      }
+    } catch (e: any) {
+      setGoogleAuthError(e.message || t('settings.oauthFailed'));
+    } finally {
+      setGoogleAuthBusy(false);
+    }
+  };
+
+  const handleDevGoogleLogin = async () => {
     setGoogleAuthBusy(true);
     setGoogleAuthError(null);
     try {
       const result = await authService.loginWithGoogle({
         clientId: googleClientId.trim() || undefined,
         clientSecret: googleClientSecret.trim(),
+        saveAsDefault: true,
       });
-      if (!result.success) setGoogleAuthError(result.error || t('settings.oauthFailed'));
+      if (!result.success) {
+        setGoogleAuthError(result.error || t('settings.oauthFailed'));
+      } else {
+        window.electronAPI?.getOAuthConfigStatus?.().then((st) => setOAuthConfigStatus(st)).catch(() => {});
+      }
+    } catch (e: any) {
+      setGoogleAuthError(e.message || t('settings.oauthFailed'));
     } finally {
       setGoogleAuthBusy(false);
     }
@@ -2101,47 +2131,123 @@ export const SettingsView: React.FC = () => {
                     </button>
                   </div>
 
-                  {/* Google OAuth 2.0 PKCE */}
-                  <div className="bg-studio-bg rounded-xl p-4 border border-studio-border space-y-2 text-xs">
-                    <span className="text-xs font-semibold text-white block">
-                      {t('settings.oauthDesktopTitle')}
-                    </span>
+                  {/* Standard 1-Click Google OAuth */}
+                  <div className="bg-studio-bg rounded-xl p-4 border border-studio-border space-y-3 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-white block">
+                        {t('settings.oauthAppConfigured')}
+                      </span>
+                      {oauthConfigStatus?.isConfigured && (
+                        <span className="inline-flex items-center space-x-1 text-[10px] text-studio-success">
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Готов к входу</span>
+                        </span>
+                      )}
+                    </div>
                     <p className="text-[11px] text-studio-textMuted leading-relaxed">
-                      {t('settings.oauthDesktopDesc')}
+                      {t('settings.oauthAppConfiguredDesc')}
                     </p>
-                    <div className="space-y-1 pt-1">
-                      <label className="text-[10px] text-studio-textMuted block">OAuth Client ID:</label>
-                      <input
-                        type="text"
-                        placeholder="123456789-abc.apps.googleusercontent.com"
-                        value={googleClientId}
-                        onChange={(event) => setGoogleClientId(event.target.value)}
-                        className="w-full bg-studio-surface border border-studio-border focus:border-indigo-500 rounded p-1.5 font-mono text-[11px] text-white"
-                      />
+
+                    <div className="pt-1">
+                      <button
+                        onClick={handleStandardGoogleLogin}
+                        disabled={googleAuthBusy}
+                        className="py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg font-bold text-xs shadow-md transition-colors flex items-center space-x-2"
+                      >
+                        {googleAuthBusy ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>{t('settings.oauthWaiting')}</span>
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24">
+                              <path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.6l3.1-3.1C17.3 1.7 14.8 1 12 1 7.5 1 3.7 3.6 1.9 7.3l3.7 2.9C6.5 7.4 9 5 12 5z" />
+                              <path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z" />
+                              <path fill="#FBBC05" d="M5.6 14.8c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.9 7.3C.7 9.7 0 10.8 0 12s.7 2.3 1.9 4.7l3.7-1.9z" />
+                              <path fill="#34A853" d="M12 23c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.5-2.4-6.4-5.2L1.9 16c1.8 3.7 5.6 7 10.1 7z" />
+                            </svg>
+                            <span>{t('settings.loginWithGoogleBtn')}</span>
+                          </>
+                        )}
+                      </button>
                     </div>
-                    <div className="space-y-1 pt-1">
-                      <label className="text-[10px] text-studio-textMuted block">{t('settings.oauthClientSecretLabel')}</label>
-                      <input
-                        type="password"
-                        autoComplete="off"
-                        placeholder={t('settings.oauthClientSecretPlaceholder')}
-                        value={googleClientSecret}
-                        onChange={(event) => setGoogleClientSecret(event.target.value)}
-                        className="w-full bg-studio-surface border border-studio-border focus:border-indigo-500 rounded p-1.5 font-mono text-[11px] text-white"
-                      />
-                      <p className="text-[10px] text-studio-textMuted">{t('settings.oauthClientSecretDesc')}</p>
-                    </div>
-                    <button type="button" onClick={() => window.electronAPI?.openExternal('https://console.cloud.google.com/apis/credentials')} className="text-[11px] text-indigo-300 hover:underline">
-                      {t('settings.openGoogleCredentials')}
-                    </button>
+
+                    {googleAuthError && (
+                      <div className="p-2.5 rounded bg-studio-danger/10 border border-studio-danger/30 text-studio-danger text-[11px] flex items-start space-x-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                        <span>{googleAuthError}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Collapsible Advanced Developer Diagnostics */}
+                  <div className="bg-studio-bg rounded-xl border border-studio-border overflow-hidden text-xs">
                     <button
-                      onClick={handleGoogleLogin}
-                      disabled={googleAuthBusy}
-                      className="px-3 py-1.5 bg-studio-surfaceHover hover:bg-studio-border disabled:opacity-50 border border-studio-border text-studio-text rounded text-xs font-medium transition-colors"
+                      type="button"
+                      onClick={() => setShowDevOAuth(!showDevOAuth)}
+                      className="w-full p-3 flex items-center justify-between text-left hover:bg-studio-surfaceHover transition-colors"
                     >
-                      {googleAuthBusy ? t('settings.oauthWaiting') : t('settings.saveAndLoginBrowser')}
+                      <div className="flex items-center space-x-2">
+                        <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-400" />
+                        <span className="text-[11px] font-medium text-studio-textMuted">
+                          {t('settings.oauthDevSection')}
+                        </span>
+                      </div>
+                      {showDevOAuth ? <ChevronUp className="w-3.5 h-3.5 text-studio-textMuted" /> : <ChevronDown className="w-3.5 h-3.5 text-studio-textMuted" />}
                     </button>
-                    {googleAuthError && <p role="alert" className="text-[11px] text-studio-danger">{googleAuthError}</p>}
+
+                    {showDevOAuth && (
+                      <div className="p-4 pt-1 space-y-3 border-t border-studio-border/60">
+                        <p className="text-[11px] text-studio-textMuted leading-relaxed">
+                          {t('settings.oauthDevSectionDesc')}
+                        </p>
+                        {oauthConfigStatus && (
+                          <div className="p-2 bg-studio-surface rounded text-[10px] text-studio-textSubtle space-y-0.5">
+                            <div>Источник конфигурации: <span className="text-white font-mono">{oauthConfigStatus.source}</span></div>
+                            {oauthConfigStatus.maskedClientId && <div>Текущий Client ID: <span className="text-white font-mono">{oauthConfigStatus.maskedClientId}</span></div>}
+                          </div>
+                        )}
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-studio-textMuted block">OAuth Client ID (Desktop):</label>
+                          <input
+                            type="text"
+                            placeholder="123456789-abc.apps.googleusercontent.com"
+                            value={googleClientId}
+                            onChange={(event) => setGoogleClientId(event.target.value)}
+                            className="w-full bg-studio-surface border border-studio-border focus:border-indigo-500 rounded p-1.5 font-mono text-[11px] text-white"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-studio-textMuted block">{t('settings.oauthClientSecretLabel')}</label>
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            placeholder={t('settings.oauthClientSecretPlaceholder')}
+                            value={googleClientSecret}
+                            onChange={(event) => setGoogleClientSecret(event.target.value)}
+                            className="w-full bg-studio-surface border border-studio-border focus:border-indigo-500 rounded p-1.5 font-mono text-[11px] text-white"
+                          />
+                          <p className="text-[10px] text-studio-textMuted">{t('settings.oauthClientSecretDesc')}</p>
+                        </div>
+                        <div className="flex items-center justify-between pt-1">
+                          <button
+                            type="button"
+                            onClick={() => window.electronAPI?.openExternal('https://console.cloud.google.com/apis/credentials')}
+                            className="text-[11px] text-indigo-300 hover:underline"
+                          >
+                            {t('settings.openGoogleCredentials')}
+                          </button>
+                          <button
+                            onClick={handleDevGoogleLogin}
+                            disabled={googleAuthBusy}
+                            className="px-3 py-1.5 bg-studio-surfaceHover hover:bg-studio-border disabled:opacity-50 border border-studio-border text-white rounded text-xs font-medium transition-colors"
+                          >
+                            {googleAuthBusy ? t('settings.oauthWaiting') : t('settings.saveAndLoginBrowser')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Google OAuth
   startGoogleOAuth: (credentials) => ipcRenderer.invoke('auth:googleOAuth', credentials),
   getGoogleSession: () => ipcRenderer.invoke('auth:getGoogleSession'),
+  getOAuthConfigStatus: () => ipcRenderer.invoke('auth:getOAuthConfigStatus'),
   saveProfile: (profile) => ipcRenderer.invoke('auth:saveProfile', profile),
   logoutGoogle: () => ipcRenderer.invoke('auth:logout'),
 

@@ -34,7 +34,17 @@ function googleRequest(url, options = {}, body = '') {
         if (response.statusCode < 200 || response.statusCode >= 300) {
           const reason = typeof data.error === 'string' ? data.error : `HTTP ${response.statusCode}`;
           const description = typeof data.error_description === 'string' ? data.error_description : '';
-          reject(new Error(`Google отклонил запрос: ${reason}${description ? ` — ${description}` : ''}.`));
+          let userFriendly = `Google отклонил запрос (${reason})`;
+          if (reason === 'invalid_client') {
+            userFriendly = 'Неверный Client ID или Client Secret приложения. Проверьте настройки OAuth в Google Cloud';
+          } else if (reason === 'invalid_grant') {
+            userFriendly = 'Код авторизации устарел или уже использован. Повторите попытку входа';
+          } else if (reason === 'redirect_uri_mismatch') {
+            userFriendly = 'Несовпадение redirect_uri. Убедитесь, что тип клиента в Google Cloud — Desktop app';
+          } else if (reason === 'unauthorized_client') {
+            userFriendly = 'Клиент не авторизован для данного метода';
+          }
+          reject(new Error(`${userFriendly}${description ? `: ${description}` : ''}.`));
           return;
         }
         resolve(data);
@@ -73,10 +83,77 @@ async function getGoogleUser(accessToken) {
   };
 }
 
-function callbackPage(success) {
+function callbackPage(success, detail = '') {
   const title = success ? 'Вход в AI Designer завершён' : 'Не удалось войти в AI Designer';
-  const message = success ? 'Вернитесь в приложение. Эту вкладку можно закрыть.' : 'Вернитесь в приложение и посмотрите сообщение об ошибке.';
-  return `<!doctype html><html lang="ru"><meta charset="utf-8"><title>${title}</title><body style="font:16px system-ui;background:#111827;color:#f9fafb;padding:40px"><h1>${title}</h1><p>${message}</p></body></html>`;
+  const subtitle = success
+    ? 'Авторизация успешно пройдена. Вернитесь в приложение AI Designer. Эту вкладку можно закрыть.'
+    : (detail || 'Вернитесь в приложение и посмотрите сообщение об ошибке.');
+  const statusColor = success ? '#10b981' : '#ef4444';
+  const icon = success ? '✓' : '✕';
+
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title}</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 36px 32px;
+      max-width: 440px;
+      text-align: center;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    .icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: ${statusColor}22;
+      color: ${statusColor};
+      font-size: 28px;
+      font-weight: bold;
+      margin-bottom: 20px;
+      border: 2px solid ${statusColor}44;
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0 0 12px;
+      font-weight: 700;
+    }
+    p {
+      font-size: 14px;
+      line-height: 1.5;
+      color: #94a3b8;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">${icon}</div>
+    <h1>${title}</h1>
+    <p>${subtitle}</p>
+  </div>
+</body>
+</html>`;
 }
 
 function startGoogleOAuth(clientId, clientSecret, openExternal, onAuthorized = async () => {}) {
@@ -106,12 +183,26 @@ function startGoogleOAuth(clientId, clientSecret, openExternal, onAuthorized = a
       }
       const returnedState = requestUrl.searchParams.get('state');
       const code = requestUrl.searchParams.get('code');
-      if (returnedState !== state || !code || requestUrl.searchParams.has('error')) {
+      const errorParam = requestUrl.searchParams.get('error');
+      const errorDescParam = requestUrl.searchParams.get('error_description');
+
+      if (returnedState !== state || !code || errorParam) {
+        let userFriendlyMsg = 'Вход в Google отменён или не завершён.';
+        if (returnedState !== state) {
+          userFriendlyMsg = 'Проверка безопасности сессии (state) не прошла. Повторите вход.';
+        } else if (errorParam) {
+          if (errorParam === 'access_denied') {
+            userFriendlyMsg = 'Вход отменён пользователем в браузере или аккаунт не добавлен в тестовые пользователи Google Cloud.';
+          } else {
+            userFriendlyMsg = `Google отклонил авторизацию: ${errorParam}${errorDescParam ? ` (${errorDescParam})` : ''}.`;
+          }
+        }
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(callbackPage(false));
-        finish({ success: false, error: returnedState !== state ? 'Проверка состояния входа не прошла. Повторите вход.' : 'Вход в Google отменён или не завершён.' });
+        res.end(callbackPage(false, userFriendlyMsg));
+        finish({ success: false, error: userFriendlyMsg });
         return;
       }
+
       if (callbackStarted) {
         res.writeHead(409).end();
         return;
@@ -146,7 +237,7 @@ function startGoogleOAuth(clientId, clientSecret, openExternal, onAuthorized = a
         finish(result);
       } catch (error) {
         res.writeHead(502, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(callbackPage(false));
+        res.end(callbackPage(false, error.message || 'Не удалось завершить обмен токена Google.'));
         finish({ success: false, error: error.message || 'Не удалось завершить вход Google.' });
       }
     });
@@ -164,7 +255,9 @@ function startGoogleOAuth(clientId, clientSecret, openExternal, onAuthorized = a
         code_challenge: challenge,
         code_challenge_method: 'S256',
         access_type: 'offline',
-        prompt: 'consent',
+        // 'select_account consent' guarantees the Google account picker is displayed
+        // so each person can explicitly pick their own Google account.
+        prompt: 'select_account consent',
       }).toString();
       try {
         await openExternal(url.toString());

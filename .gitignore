@@ -43,3 +43,8 @@ Thumbs.db
 *.p12
 *.pfx
 desktop.ini
+
+oauth.local.json
+electron/oauth.local.json
+oauth.dev.json
+electron/oauth.dev.json

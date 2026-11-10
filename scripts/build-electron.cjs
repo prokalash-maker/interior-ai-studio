@@ -21,4 +21,9 @@ fs.copyFileSync(
   path.resolve(outDir, 'googleAuth.cjs')
 );
 
+fs.copyFileSync(
+  path.resolve(__dirname, '../electron/oauthConfig.cjs'),
+  path.resolve(outDir, 'oauthConfig.cjs')
+);
+
 console.log('Electron scripts prepared successfully in dist-electron/');
