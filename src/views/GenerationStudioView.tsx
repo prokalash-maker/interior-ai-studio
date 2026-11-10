@@ -477,25 +477,13 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
     setErrorMsg(null);
     setIsGenerating(true);
     setGenerationTimer(0);
-    setGenerationProgressText('Фаза 1: Загрузка геометрии Archicad и фиксация ControlNet...');
+    setGenerationProgressText(t('studio.generationWaiting'));
 
     let elapsed = 0;
     const timer = setInterval(() => {
       elapsed += 0.2;
       setGenerationTimer(Math.round(elapsed * 10) / 10);
 
-      const ratio = elapsed / Math.max(15, targetRenderTimeSec);
-      if (ratio < 0.15) {
-        setGenerationProgressText('Фаза 1: Загрузка геометрии Archicad и фиксация ControlNet (Canny + Depth)...');
-      } else if (ratio < 0.45) {
-        setGenerationProgressText('Фаза 2: Базовый расчет PBR материалов, шпона дерева и физического света...');
-      } else if (ratio < 0.75) {
-        setGenerationProgressText('Фаза 3: Многопроходный латентный апскейл 2K/4K и скульптурирование фактур...');
-      } else if (ratio < 0.95) {
-        setGenerationProgressText('Фаза 4: Финальный денойзинг микродеталей, контактные тени и амбиентная окклюзия...');
-      } else {
-        setGenerationProgressText('Финал: Декодирование VAE и сборка ультра-четкого архитектурного кадра...');
-      }
     }, 200);
     timerRef.current = timer;
 
@@ -912,19 +900,11 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
                   </p>
                 </div>
                 <div className="w-full bg-studio-bg rounded-full h-2 overflow-hidden border border-studio-border/60">
-                  <div
-                    className="bg-gradient-to-r from-indigo-500 via-studio-cyan to-emerald-400 h-full rounded-full transition-all duration-300"
-                    style={{
-                      width: `${Math.min(99, Math.round((generationTimer / Math.max(15, targetRenderTimeSec)) * 100))}%`,
-                    }}
-                  />
+                  <div className="bg-gradient-to-r from-indigo-500 via-studio-cyan to-emerald-400 h-full w-full rounded-full animate-pulse" />
                 </div>
                 <div className="flex items-center justify-between w-full text-[11px] font-mono text-studio-textSubtle px-1">
                   <span>
-                    {generationTimer}с / {targetRenderTimeSec < 60 ? `${targetRenderTimeSec}с` : `${Math.round(targetRenderTimeSec / 60)} мин`}
-                  </span>
-                  <span className="text-studio-cyan font-bold">
-                    {Math.min(99, Math.round((generationTimer / Math.max(15, targetRenderTimeSec)) * 100))}%
+                    {generationTimer.toFixed(1)} {t('studio.sec')} · {t('studio.elapsedTime')}
                   </span>
                 </div>
               </div>
