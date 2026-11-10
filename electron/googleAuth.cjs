@@ -33,7 +33,8 @@ function googleRequest(url, options = {}, body = '') {
         }
         if (response.statusCode < 200 || response.statusCode >= 300) {
           const reason = typeof data.error === 'string' ? data.error : `HTTP ${response.statusCode}`;
-          reject(new Error(`Google отклонил запрос: ${reason}. Проверьте Desktop Client ID и настройки OAuth.`));
+          const description = typeof data.error_description === 'string' ? data.error_description : '';
+          reject(new Error(`Google отклонил запрос: ${reason}${description ? ` — ${description}` : ''}.`));
           return;
         }
         resolve(data);
@@ -78,7 +79,7 @@ function callbackPage(success) {
   return `<!doctype html><html lang="ru"><meta charset="utf-8"><title>${title}</title><body style="font:16px system-ui;background:#111827;color:#f9fafb;padding:40px"><h1>${title}</h1><p>${message}</p></body></html>`;
 }
 
-function startGoogleOAuth(clientId, openExternal, onAuthorized = async () => {}) {
+function startGoogleOAuth(clientId, clientSecret, openExternal, onAuthorized = async () => {}) {
   return new Promise((resolve) => {
     const verifier = crypto.randomBytes(32).toString('base64url');
     const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
@@ -119,13 +120,15 @@ function startGoogleOAuth(clientId, openExternal, onAuthorized = async () => {})
 
       try {
         const redirectUri = `http://127.0.0.1:${address.port}`;
-        const token = await postToken({
+        const tokenParams = {
           code,
           client_id: clientId,
           redirect_uri: redirectUri,
           grant_type: 'authorization_code',
           code_verifier: verifier,
-        });
+        };
+        if (clientSecret) tokenParams.client_secret = clientSecret;
+        const token = await postToken(tokenParams);
         if (!token.access_token || !Number.isFinite(Number(token.expires_in))) {
           throw new Error('Google не выдал действительный токен доступа.');
         }
@@ -175,11 +178,13 @@ function startGoogleOAuth(clientId, openExternal, onAuthorized = async () => {})
 
 async function refreshGoogleSession(saved) {
   if (!saved || !saved.clientId || !saved.user || !saved.refreshToken) return null;
-  const token = await postToken({
+  const tokenParams = {
     client_id: saved.clientId,
     refresh_token: saved.refreshToken,
     grant_type: 'refresh_token',
-  });
+  };
+  if (saved.clientSecret) tokenParams.client_secret = saved.clientSecret;
+  const token = await postToken(tokenParams);
   if (!token.access_token || !Number.isFinite(Number(token.expires_in))) {
     throw new Error('Google не обновил токен доступа. Повторите вход.');
   }

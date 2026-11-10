@@ -33,7 +33,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteSecureItem: (key) => ipcRenderer.invoke('secure:delete', key),
 
   // Google OAuth
-  startGoogleOAuth: (clientId) => ipcRenderer.invoke('auth:googleOAuth', clientId),
+  startGoogleOAuth: (credentials) => ipcRenderer.invoke('auth:googleOAuth', credentials),
   getGoogleSession: () => ipcRenderer.invoke('auth:getGoogleSession'),
   saveProfile: (profile) => ipcRenderer.invoke('auth:saveProfile', profile),
   logoutGoogle: () => ipcRenderer.invoke('auth:logout'),

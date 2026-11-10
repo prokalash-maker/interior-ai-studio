@@ -132,6 +132,7 @@ export const SettingsView: React.FC = () => {
   // Auth State
   const [authState, setAuthState] = useState<AuthState>(authService.getState());
   const [googleClientId, setGoogleClientId] = useState('');
+  const [googleClientSecret, setGoogleClientSecret] = useState('');
   const [googleAuthBusy, setGoogleAuthBusy] = useState(false);
   const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
 
@@ -152,6 +153,9 @@ export const SettingsView: React.FC = () => {
     if (window.electronAPI) {
       window.electronAPI.getSecureItem('google_oauth_client_id').then((saved) => {
         if (saved) setGoogleClientId(saved);
+      });
+      window.electronAPI.getSecureItem('google_oauth_client_secret').then((saved) => {
+        if (saved) setGoogleClientSecret(saved);
       });
       window.electronAPI.getSecureItem('gemini_api_key').then((savedKey) => {
         if (savedKey) {
@@ -542,7 +546,10 @@ export const SettingsView: React.FC = () => {
     setGoogleAuthBusy(true);
     setGoogleAuthError(null);
     try {
-      const result = await authService.loginWithGoogle(googleClientId.trim() || undefined);
+      const result = await authService.loginWithGoogle({
+        clientId: googleClientId.trim() || undefined,
+        clientSecret: googleClientSecret.trim(),
+      });
       if (!result.success) setGoogleAuthError(result.error || t('settings.oauthFailed'));
     } finally {
       setGoogleAuthBusy(false);
@@ -2111,6 +2118,18 @@ export const SettingsView: React.FC = () => {
                         onChange={(event) => setGoogleClientId(event.target.value)}
                         className="w-full bg-studio-surface border border-studio-border focus:border-indigo-500 rounded p-1.5 font-mono text-[11px] text-white"
                       />
+                    </div>
+                    <div className="space-y-1 pt-1">
+                      <label className="text-[10px] text-studio-textMuted block">{t('settings.oauthClientSecretLabel')}</label>
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        placeholder={t('settings.oauthClientSecretPlaceholder')}
+                        value={googleClientSecret}
+                        onChange={(event) => setGoogleClientSecret(event.target.value)}
+                        className="w-full bg-studio-surface border border-studio-border focus:border-indigo-500 rounded p-1.5 font-mono text-[11px] text-white"
+                      />
+                      <p className="text-[10px] text-studio-textMuted">{t('settings.oauthClientSecretDesc')}</p>
                     </div>
                     <button type="button" onClick={() => window.electronAPI?.openExternal('https://console.cloud.google.com/apis/credentials')} className="text-[11px] text-indigo-300 hover:underline">
                       {t('settings.openGoogleCredentials')}

@@ -14,12 +14,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [error, setError] = useState<string | null>(null);
   const [showConfig, setShowConfig] = useState(false);
   const [clientIdInput, setClientIdInput] = useState('');
+  const [clientSecretInput, setClientSecretInput] = useState('');
   const [customName] = useState('ProKalash');
   const [customEmail] = useState('');
 
   useEffect(() => {
     if (isOpen) window.electronAPI?.getSecureItem('google_oauth_client_id').then((saved) => {
       if (saved) setClientIdInput(saved);
+    });
+    if (isOpen) window.electronAPI?.getSecureItem('google_oauth_client_secret').then((saved) => {
+      if (saved) setClientSecretInput(saved);
     });
   }, [isOpen]);
 
@@ -39,7 +43,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await authService.loginWithGoogle(trimmedId || undefined);
+      const res = await authService.loginWithGoogle({ clientId: trimmedId || undefined, clientSecret: clientSecretInput.trim() });
       if (res.success) {
         onClose();
       } else if (res.requiresConfig) {
@@ -135,6 +139,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 value={clientIdInput}
                 onChange={(e) => setClientIdInput(e.target.value)}
                 placeholder="123456789-xxx.apps.googleusercontent.com"
+                className="w-full bg-studio-surface border border-studio-border focus:border-indigo-500 rounded p-2 font-mono text-[11px] text-white focus:outline-none"
+              />
+              <input
+                type="password"
+                autoComplete="off"
+                value={clientSecretInput}
+                onChange={(e) => setClientSecretInput(e.target.value)}
+                placeholder={t('settings.oauthClientSecretLabel')}
                 className="w-full bg-studio-surface border border-studio-border focus:border-indigo-500 rounded p-2 font-mono text-[11px] text-white focus:outline-none"
               />
               <button type="button" onClick={() => window.electronAPI?.openExternal('https://console.cloud.google.com/apis/credentials')} className="text-[11px] text-indigo-300 hover:underline">

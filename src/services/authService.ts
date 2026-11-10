@@ -59,11 +59,11 @@ class AuthService {
     return { ...this.state };
   }
 
-  async loginWithGoogle(clientId?: string): Promise<{ success: boolean; requiresConfig?: boolean; error?: string }> {
+  async loginWithGoogle(credentials: { clientId?: string; clientSecret?: string } = {}): Promise<{ success: boolean; requiresConfig?: boolean; error?: string }> {
     await this.whenReady();
     if (!window.electronAPI) return { success: false, error: 'Вход Google доступен только в настольном приложении.' };
     try {
-      const result = await window.electronAPI.startGoogleOAuth(clientId);
+      const result = await window.electronAPI.startGoogleOAuth(credentials);
       if (!result.success || !result.user) {
         return { success: false, requiresConfig: result.requiresConfig, error: result.error || 'Вход Google не завершён.' };
       }

@@ -332,7 +332,7 @@ function decryptData(ciphertext) {
 
 // ---------------- IPC Setup ----------------
 function setupIPC() {
-  const rendererSecureKeys = new Set(['gemini_api_key', 'krea_api_key', 'google_oauth_client_id', 'local_user_profile']);
+  const rendererSecureKeys = new Set(['gemini_api_key', 'krea_api_key', 'google_oauth_client_id', 'google_oauth_client_secret', 'local_user_profile']);
   ipcMain.handle('gemini:openWindow', async () => {
     try { return { success: await openGeminiBridgeWindow() }; }
     catch (error) { return { success: false, error: error.message || 'Не удалось открыть Gemini.' }; }
@@ -1441,27 +1441,33 @@ function setupIPC() {
   };
   let googleOAuthInProgress = false;
 
-  ipcMain.handle('auth:googleOAuth', async (_event, passedClientId) => {
-    const clientId = String(passedClientId || readAuthRecord('google_oauth_client_id') || '').trim();
+  ipcMain.handle('auth:googleOAuth', async (_event, credentials = {}) => {
+    const clientId = String(credentials.clientId || readAuthRecord('google_oauth_client_id') || '').trim();
+    const clientSecret = String(credentials.clientSecret || readAuthRecord('google_oauth_client_secret') || '').trim();
     if (!/^\d+-[a-z0-9-]+\.apps\.googleusercontent\.com$/i.test(clientId)) {
       return { success: false, requiresConfig: true, error: 'Укажите OAuth Client ID типа Desktop application из Google Cloud Console.' };
+    }
+    if (clientSecret.length > 512) {
+      return { success: false, requiresConfig: true, error: 'Client Secret слишком длинный. Проверьте значение из Google Cloud Console.' };
     }
     if (googleOAuthInProgress) {
       return { success: false, error: 'Вход Google уже выполняется. Дождитесь результата в браузере.' };
     }
     googleOAuthInProgress = true;
     try {
-      const result = await startGoogleOAuth(clientId, (url) => shell.openExternal(url), async (verified) => {
+      writeAuthRecord('google_oauth_client_id', clientId);
+      if (clientSecret) writeAuthRecord('google_oauth_client_secret', clientSecret);
+      const result = await startGoogleOAuth(clientId, clientSecret, (url) => shell.openExternal(url), async (verified) => {
         const record = {
           verifiedGoogle: true,
           clientId,
+          clientSecret: clientSecret || undefined,
           user: verified.user,
           accessToken: verified.accessToken,
           refreshToken: verified.refreshToken,
           expiresAt: verified.expiresAt,
         };
         writeAuthRecord('google_oauth_session', JSON.stringify(record));
-        writeAuthRecord('google_oauth_client_id', clientId);
         db.run("DELETE FROM secure_kv WHERE key = 'google_user_session'");
         saveDatabaseFile();
       });

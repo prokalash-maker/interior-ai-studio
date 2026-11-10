@@ -30,7 +30,7 @@ export interface ElectronAPI {
   deleteSecureItem: (key: string) => Promise<boolean>;
 
   // Google OAuth 2.0 PKCE Loopback
-  startGoogleOAuth: (clientId?: string) => Promise<{ success: boolean; user?: GoogleUser; requiresConfig?: boolean; error?: string }>;
+  startGoogleOAuth: (credentials: { clientId?: string; clientSecret?: string }) => Promise<{ success: boolean; user?: GoogleUser; requiresConfig?: boolean; error?: string }>;
   getGoogleSession: () => Promise<{ success: boolean; user?: GoogleUser; error?: string }>;
   saveProfile: (profile: any) => Promise<boolean>;
   logoutGoogle: () => Promise<boolean>;
