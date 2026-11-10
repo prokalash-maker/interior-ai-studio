@@ -1,0 +1,30 @@
+# Rust / Tauri
+/target/
+
+# JavaScript / frontend builds
+/node_modules/
+/dist/
+/dist-electron/
+/out/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local databases, logs, and generated media/models
+*.sqlite
+*.sqlite3
+*.db
+*.log
+/models/
+/artifacts/
+/renders/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
