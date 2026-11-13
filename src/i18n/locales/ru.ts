@@ -1,6 +1,10 @@
 import { Translations } from '../types';
 
 export const ru: Translations = {
+  'bridgeResume.waiting': "ожидает результат",
+  'bridgeResume.resume': "Продолжить запрос",
+  'bridgeResume.manualHint': "Открыто несколько запросов. Выберите скачанный результат для ракурса «{view}».",
+  'bridgeResume.materialsChanged': "Материалы изменились после отправки. Можно импортировать старый результат или начать новый запрос с актуальными материалами.",
   'flux.open': "Открыть FLUX.2",
   'flux.openFailed': "Не удалось открыть демо FLUX.2. Попробуйте ещё раз.",
   'flux.attachHint': "Раскройте Input image(s) в демо FLUX.2 и добавьте изображения из комплекта. Начните с 01-source-render.",

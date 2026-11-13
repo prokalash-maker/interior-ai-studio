@@ -86,7 +86,10 @@ export function ProjectMaterials({ items, disabled, onChange }: {
     {draft && <form className="bridge-stack rounded-xl border p-4" onSubmit={(event) => {
       event.preventDefault();
       if (disabled || saving || reading || !draft.name.trim()) return;
-      const item = { ...draft, name: draft.name.trim(), url: draft.url?.trim(), type: draft.imageBase64 ? 'image' : draft.url?.trim() ? 'url' : 'text' } as MaterialReference;
+      const item: MaterialReference = {
+        ...draft, name: draft.name.trim(), url: draft.url?.trim(), updatedAt: Date.now(),
+        type: draft.imageBase64 ? 'image' : draft.url?.trim() ? 'url' : 'text',
+      };
       if (item.url && !/^https:\/\//i.test(item.url)) { setError(t('catalog.https')); return; }
       void save(items.some((current) => current.id === item.id) ? items.map((current) => current.id === item.id ? item : current) : [...items, item]);
     }}>

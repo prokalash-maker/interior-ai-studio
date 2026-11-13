@@ -106,6 +106,7 @@ export interface MaterialReference {
   finish?: string;
   format?: string;
   layout?: string;
+  updatedAt?: number;
   createdAt: number;
 }
 

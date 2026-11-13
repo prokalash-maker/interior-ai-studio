@@ -65,9 +65,13 @@ interface BridgeHandoff {
   materials?: MaterialReference[];
   master?: boolean;
   imported?: boolean;
+  manualImport?: boolean;
+  materialVersion?: string;
+  guideVersion?: string;
 }
 
-const handoffKey = 'visual-ai-gemini-handoff';
+const legacyHandoffKey = 'visual-ai-gemini-handoff';
+const handoffKey = 'visual-ai-bridge-requests';
 const recentImportKey = 'visual-ai-gemini-imported-downloads';
 const steps: BridgeStep[] = ['source', 'design', 'gemini', 'result'];
 const imageAccept = 'image/png,image/jpeg,image/webp';
@@ -81,9 +85,27 @@ function readSession<T>(key: string, fallback: T): T {
   }
 }
 
+function readHandoffs(): BridgeHandoff[] {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(handoffKey) || 'null');
+    if (Array.isArray(stored)) {
+      return stored.filter((item) => item && typeof item.projectId === 'string' &&
+        typeof item.viewId === 'string' && typeof item.prompt === 'string' && Number.isFinite(item.since));
+    }
+  } catch {
+    // The active request can still be recovered from the current session.
+  }
+  const legacy = readSession<BridgeHandoff | null>(legacyHandoffKey, null);
+  return legacy ? [legacy] : [];
+}
+
 function imageFileFromBase64(base64: string, name: string, mimeType: string): File {
   const decoded = atob(base64);
   return new File([Uint8Array.from(decoded, (character) => character.charCodeAt(0))], name, { type: mimeType });
+}
+
+function materialVersion(items: MaterialReference[]) {
+  return JSON.stringify(items.map(({ imageBase64, ...item }) => [item, Boolean(imageBase64)]));
 }
 
 const buttonClass = 'bridge-button';
@@ -143,9 +165,17 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   const [promptOverride, setPromptOverride] = useState<string | null>(null);
 
   const [step, setStep] = useState<BridgeStep>('source');
-  const [handoff, setHandoff] = useState(() => readSession<BridgeHandoff | null>(handoffKey, null));
+  const [handoffs, setHandoffs] = useState(readHandoffs);
   const [downloads, setDownloads] = useState<GeminiDownload[]>([]);
-  const [importedPaths, setImportedPaths] = useState(() => readSession<string[]>(recentImportKey, []));
+  const [importedPaths, setImportedPaths] = useState<string[]>(() => {
+    try {
+      const paths: unknown = JSON.parse(localStorage.getItem(recentImportKey) || 'null');
+      if (Array.isArray(paths)) return paths.filter((item) => typeof item === 'string');
+    } catch {
+      // Older versions stored the import history in the current session.
+    }
+    return readSession<string[]>(recentImportKey, []);
+  });
   const [bridgeMessage, setBridgeMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -233,7 +263,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     setCustomLighting(design?.customLighting || '');
     setCustomDecor(design?.customDecor || '');
 
-    const pending = handoff?.projectId === currentProject?.id ? handoff : null;
+    const requests = handoffs.filter((request) => request.projectId === currentProject?.id && views.some((item) => item.id === request.viewId));
+    const pending = requests.find((request) => !request.imported) || requests[0];
     const first = views.find((view) => view.id === pending?.viewId) || views[0];
     if (pending && first?.id === pending.viewId && !pending.imported) setStep('gemini');
     else if (first?.resultGenerationId || first?.resultImageBase64) setStep('result');
@@ -543,7 +574,11 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   const zones = (view?.materialZones || []).filter((zone) => materialReferences.some((item) => item.id === zone.materialId));
   const ready = Boolean(view && sourceImage && !sourceImageFailed);
   const reference = Boolean(approvedDesign && approvedDesign.masterViewId !== view?.id);
-  const pending = handoff?.projectId === currentProject?.id && handoff?.viewId === view?.id ? handoff : null;
+  const pending = handoffs.find((request) => request.projectId === currentProject?.id && request.viewId === view?.id);
+  const ambiguousDownload = pending && (pending.manualImport || handoffs.some((request) => request !== pending && !request.imported && request.mode === pending.mode));
+  const guideVersion = JSON.stringify([zones, reference && approvedDesign?.approvedAt]);
+  const materialsChanged = (pending?.materialVersion !== undefined && pending.materialVersion !== materialVersion(materialReferences)) ||
+    (pending?.guideVersion !== undefined && pending.guideVersion !== guideVersion);
   const packageHandoff = pending && (pending.mode === 'flow' || pending.mode === 'flux');
   const label = (item: { labelRu: string; labelUk: string; labelEn: string }) =>
     language === 'ru' ? item.labelRu : language === 'uk' ? item.labelUk : item.labelEn;
@@ -591,7 +626,6 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
 
   async function saveZones(next: MaterialZone[]) {
     await persistProjectViews(projectViews.map((item) => item.id === selectedViewId ? { ...item, materialZones: next, updatedAt: Date.now() } : item));
-    if (pending) setPending(null);
   }
 
   async function saveMaterials(items: MaterialReference[], inAction = false) {
@@ -605,16 +639,27 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       currentProjectRef.current = updated;
       if (alive.current) onUpdateProject?.(updated);
       setPromptOverride(null);
-      if (pending) setPending(null);
     } finally {
       if (!inAction) busyRef.current = false;
     }
   }
 
   function setPending(value: BridgeHandoff | null) {
-    setHandoff(value);
-    if (value) sessionStorage.setItem(handoffKey, JSON.stringify(value));
-    else sessionStorage.removeItem(handoffKey);
+    if (!currentProject || !view) return;
+    const others = handoffs.filter((request) => request.projectId !== currentProject.id || request.viewId !== view.id);
+    const overlapping = value && !value.imported && (value.mode === 'browser' || value.mode === 'embedded') &&
+      others.some((request) => request.mode === value.mode && !request.imported);
+    const next = value ? [
+      overlapping ? { ...value, manualImport: true } : value,
+      ...others.map((request) => overlapping && request.mode === value.mode && !request.imported ? { ...request, manualImport: true } : request),
+    ] : others;
+    setHandoffs(next);
+    try {
+      localStorage.setItem(handoffKey, JSON.stringify(next));
+      sessionStorage.removeItem(legacyHandoffKey);
+    } catch (error) {
+      console.warn('Could not persist Bridge requests', error);
+    }
   }
 
   function updateHandoffFlags(flags: Partial<Pick<BridgeHandoff, 'copiedImage' | 'copiedReference' | 'copiedPrompt'>>) {
@@ -623,7 +668,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
 
   useEffect(() => {
     const api = window.electronAPI;
-    if (!api || !pending || pending.mode === 'flow' || pending.mode === 'flux') {
+    if (!api || !pending || ambiguousDownload || pending.mode === 'flow' || pending.mode === 'flux') {
       setDownloads([]);
       return;
     }
@@ -652,7 +697,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       window.removeEventListener('focus', refresh);
       unsubscribe();
     };
-  }, [pending?.mode, pending?.since, importedPaths]);
+  }, [pending?.mode, pending?.since, ambiguousDownload, importedPaths]);
 
   function goTo(next: BridgeStep) {
     setStep(next);
@@ -684,7 +729,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       setErrorMessage(t('bridge.invalidImageFile'));
       return;
     }
-    const replace = view && !view.resultGenerationId && !view.resultImageBase64 && !view.approved;
+    const replace = view && !pending && !view.resultGenerationId && !view.resultImageBase64 && !view.approved;
     if (!replace && projectViews.length >= 12) {
       setErrorMessage(t('bridge.viewLimitReached'));
       return;
@@ -696,7 +741,6 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       approved: false, designOverride: replace ? view.designOverride : undefined, createdAt: replace ? view.createdAt : now, updatedAt: now,
     };
     await persistProjectViews(replace ? projectViews.map((item) => item.id === next.id ? next : item) : [...projectViews, next]);
-    if (pending) setPending(null);
     await handleSelectView(next);
     goTo('design');
   }
@@ -716,7 +760,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     setDownloads([]);
     setPending({ projectId: currentProject.id, viewId: view.id, mode, since, prompt, parentId: parent?.id,
       copiedImage, copiedReference: false, copiedPrompt: false, design: buildDesignDraft(), master: reference && !parent,
-      materials: materialReferences.map(({ imageBase64: _swatch, ...item }) => item) });
+      materials: materialReferences.map(({ imageBase64: _swatch, ...item }) => item),
+      materialVersion: materialVersion(materialReferences), guideVersion });
     goTo('gemini');
     if (!externalPackage) {
       if (copiedImage) setBridgeMessage(t('bridgeFlow.sourceCopied'));
@@ -724,14 +769,21 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     }
   }
 
-  function handoffImage() {
-    if (pending?.parentId && importedResult?.id === pending.parentId) return { image: importedResult.imageBase64, mime: importedResult.mimeType };
+  async function handoffImage() {
+    if (pending?.parentId) {
+      if (importedResult?.id === pending.parentId) return { image: importedResult.imageBase64, mime: importedResult.mimeType };
+      const record = await dbService.getGenerationById(pending.parentId);
+      if (!record?.outputImageBase64) throw new Error('Previous result is missing');
+      const mime = record.outputImageBase64.match(/^data:(image\/[\w.+-]+);base64,/)?.[1] || 'image/png';
+      return { image: record.outputImageBase64, mime };
+    }
     return { image: sourceImage || '', mime: sourceMimeType };
   }
 
   async function prepareFiles() {
     if (!pending || !window.electronAPI) return;
-    const input = handoffImage();
+    if (materialsChanged && !pending.parentId) throw new Error('Project materials changed');
+    const input = await handoffImage();
     const files: BridgeAsset[] = [{ name: '01-source-render', ...input }];
     if (pending.master ?? (reference && !pending.parentId)) files.push(await loadMasterImage());
     const sheet = pending.parentId ? null : await buildSwatchSheet(materialReferences);
@@ -789,7 +841,11 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     if (downloadPath) {
       const paths = [...importedPaths, downloadPath].slice(-40);
       setImportedPaths(paths);
-      sessionStorage.setItem(recentImportKey, JSON.stringify(paths));
+      try {
+        localStorage.setItem(recentImportKey, JSON.stringify(paths));
+      } catch (error) {
+        console.warn('Could not persist imported download paths', error);
+      }
     }
     if (pending) setPending(packageHandoff && !upscale ? { ...pending, imported: true } : null);
     setImportedResult(result);
@@ -865,9 +921,13 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
                 {view && <>
                   <label className="bridge-field">{t('bridge.projectAngles')}<select className={controlClass} value={selectedViewId} disabled={busy}
                     onChange={(event) => { const next = projectViews.find((item) => item.id === event.target.value); if (next) void handleSelectView(next); }}>
-                    {projectViews.map((item) => <option key={item.id} value={item.id}>{item.name}{item.resultGenerationId ? ' ✓' : ''}</option>)}
+                    {projectViews.map((item) => {
+                      const waiting = handoffs.some((request) => request.projectId === currentProject.id && request.viewId === item.id && !request.imported);
+                      return <option key={item.id} value={item.id}>{item.name}{waiting ? ' · ' + t('bridgeResume.waiting') : item.resultGenerationId ? ' ✓' : ''}</option>;
+                    })}
                   </select></label>
                   <button className={buttonClass} disabled={busy} onClick={() => anglesInputRef.current?.click()}><Plus size={16} />{t('bridge.addAngles')}</button>
+                  {pending && <button className={primaryClass} disabled={busy} onClick={() => goTo('gemini')}><ArrowRight size={16} />{t('bridgeResume.resume')}</button>}
                 </>}
                 {designVariants.length > 0 && <details className="bridge-details"><summary>{t('bridge.savedVariants')}<ChevronDown size={16} /></summary>
                   <div className="bridge-actions">{designVariants.map((variant) => <button key={variant.id} className={buttonClass} disabled={busy}
@@ -927,6 +987,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
           </fieldset>}
 
           {step === 'gemini' && <div className="bridge-stack">
+            {pending && materialsChanged && !pending.parentId && <p className="bridge-muted" role="status">{t('bridgeResume.materialsChanged')}</p>}
             {!pending ? <div className="bridge-actions">
               <button className={primaryClass} disabled={busy || !generatedPrompt.trim()} onClick={() => run(() => startGemini('browser'), t('bridge.openFailed'))}><ExternalLink size={17} />{t('bridge.openGemini')}</button>
               <button className={buttonClass} disabled={busy || !generatedPrompt.trim()} onClick={() => run(() => startGemini('flow'), t('flow.openFailed'))}><ExternalLink size={17} />{t('flow.open')}</button>
@@ -935,21 +996,21 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
             </div> : packageHandoff ? <>
               <ol className="bridge-instructions">
                 <li><div><strong>{t('flow.attach')}</strong><p>{t(pending.mode === 'flux' ? 'flux.attachHint' : 'flow.attachHint')}</p></div>
-                  {window.electronAPI && <button className={buttonClass} disabled={busy} onClick={() => run(prepareFiles, t('flow.filesFailed'))}><FolderOpen size={16} />{t('flow.files')}</button>}</li>
+                  {window.electronAPI && <button className={buttonClass} disabled={busy || (materialsChanged && !pending.parentId)} onClick={() => run(prepareFiles, t('flow.filesFailed'))}><FolderOpen size={16} />{t('flow.files')}</button>}</li>
                 {!window.electronAPI && <li><div><strong>{t('flow.files')}</strong><p>{t('flow.browserFiles')}</p></div>
                   <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
-                    const input = handoffImage();
+                    const input = await handoffImage();
                     if (!await geminiBridgeService.prepareTempFileAndReveal(input.image, '01-source-render', input.mime)) throw new Error('source');
                   }, t('flow.filesFailed'))}>{t('bridgeFlow.source')}</button>
-                  {reference && !pending.parentId && <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                  {reference && !pending.parentId && <button className={buttonClass} disabled={busy || materialsChanged} onClick={() => run(async () => {
                     const image = await loadMasterImage();
                     if (!await geminiBridgeService.prepareTempFileAndReveal(image.image, image.name, image.mime)) throw new Error('reference');
                   }, t('flow.filesFailed'))}>{t('bridge.masterAvailable')}</button>}
-                  {swatchItems.length > 0 && !pending.parentId && <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                  {swatchItems.length > 0 && !pending.parentId && <button className={buttonClass} disabled={busy || materialsChanged} onClick={() => run(async () => {
                     const image = await buildSwatchSheet(materialReferences);
                     if (!image || !await geminiBridgeService.prepareTempFileAndReveal(image.image, '03-material-swatches.png', image.mime)) throw new Error('swatches');
                   }, t('flow.filesFailed'))}>{t('catalog.sheet')}</button>}
-                  {zones.length > 0 && !pending.parentId && <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                  {zones.length > 0 && !pending.parentId && <button className={buttonClass} disabled={busy || materialsChanged} onClick={() => run(async () => {
                     const image = await zoneGuide();
                     saveBridgeFile(image.image, image.name + '.png');
                   }, t('flow.filesFailed'))}>{t('zones.title')}</button>}</li>}
@@ -973,20 +1034,20 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
               <ol className="bridge-instructions">
                 <li><div><strong>{t('bridgeFlow.pasteSource')}</strong><p>{t('bridgeFlow.pasteSourceHint')}</p></div>
                   <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
-                    const input = handoffImage();
+                    const input = await handoffImage();
                     if (!await geminiBridgeService.copyImageToClipboard(input.image, input.mime)) throw new Error('clipboard');
                     updateHandoffFlags({ copiedImage: true }); setBridgeMessage(t('bridgeFlow.sourceCopied'));
                   }, t('bridgeFlow.copyImageFailed'))}>{pending.copiedImage ? <Check size={16} /> : <Copy size={16} />}{t('bridgeFlow.copyImage')}</button></li>
                 {reference && !pending.parentId && <li><div><strong>{t('bridgeFlow.pasteReference')}</strong><p>{t('bridge.stepPasteWithMaster')}</p></div>
-                  <button className={buttonClass} disabled={busy} onClick={() => run(handleCopyMasterImage, t('bridge.masterCopyFailed'))}>{pending.copiedReference && <Check size={16} />}{t('bridge.copyMasterImage')}</button></li>}
+                  <button className={buttonClass} disabled={busy || materialsChanged} onClick={() => run(handleCopyMasterImage, t('bridge.masterCopyFailed'))}>{pending.copiedReference && <Check size={16} />}{t('bridge.copyMasterImage')}</button></li>}
                 {swatchItems.length > 0 && !pending.parentId && <li><div><strong>{t('catalog.sheet')}</strong><p>{t('catalog.sheetHint')}</p></div>
-                  <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                  <button className={buttonClass} disabled={busy || materialsChanged} onClick={() => run(async () => {
                     const image = await buildSwatchSheet(materialReferences);
                     if (!image || !await geminiBridgeService.copyImageToClipboard(image.image, image.mime)) throw new Error('swatches');
                     setBridgeMessage(t('catalog.sheetCopied'));
                   }, t('catalog.sheetFailed'))}><Copy size={16} />{t('catalog.copySheet')}</button></li>}
                 {zones.length > 0 && !pending.parentId && <li><div><strong>{t('zones.title')}</strong><p>{t('zones.transfer')}</p></div>
-                  <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                  <button className={buttonClass} disabled={busy || materialsChanged} onClick={() => run(async () => {
                     const image = await zoneGuide();
                     if (!await geminiBridgeService.copyImageToClipboard(image.image, image.mime)) throw new Error('zone-guide');
                     setBridgeMessage(t('zones.copied'));
@@ -1001,9 +1062,9 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
               </ol>
               <details className="bridge-details"><summary>{t('bridgeFlow.transferOptions')}<ChevronDown size={16} /></summary><div className="bridge-stack">
                 <div className="bridge-actions">
-                  {window.electronAPI && <button className={buttonClass} disabled={busy} onClick={() => run(prepareFiles, t('flow.filesFailed'))}><FolderOpen size={16} />{t('flow.files')}</button>}
+                  {window.electronAPI && <button className={buttonClass} disabled={busy || (materialsChanged && !pending.parentId)} onClick={() => run(prepareFiles, t('flow.filesFailed'))}><FolderOpen size={16} />{t('flow.files')}</button>}
                   <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
-                    const input = handoffImage();
+                    const input = await handoffImage();
                     if (!await geminiBridgeService.prepareTempFileAndReveal(input.image, 'gemini-source.png', input.mime)) throw new Error('file');
                     setBridgeMessage(t('bridge.tempReady'));
                   }, t('bridgeFlow.copyImageFailed'))}><FolderOpen size={16} />{t('bridge.revealFile')}</button>
@@ -1014,7 +1075,11 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
             </>}
           </div>}
 
-          {(step === 'gemini' || step === 'result') && pending && !packageHandoff && downloads.length > 0 && <div className="bridge-downloads">
+          {(step === 'gemini' || step === 'result') && pending && !packageHandoff && ambiguousDownload && <div className="bridge-downloads">
+            <p className="bridge-muted">{t('bridgeResume.manualHint', { view: view?.name || '' })}</p>
+            <button className={buttonClass} disabled={busy} onClick={() => { setFlowUpscalePicker(false); fileInputRef.current?.click(); }}><Download size={16} />{t('bridge.importResult')}</button>
+          </div>}
+          {(step === 'gemini' || step === 'result') && pending && !packageHandoff && !ambiguousDownload && downloads.length > 0 && <div className="bridge-downloads">
             <h3>{t('bridgeFlow.foundDownloads')}</h3>
             {downloads.map((item) => <div key={item.filePath} className="bridge-download">
               <span><Download size={16} />{item.fileName}</span><button className={primaryClass} disabled={busy || item.byteLength > 50 * 1024 * 1024}
@@ -1085,7 +1150,6 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
             {step !== 'source' ? <button className={buttonClass} disabled={busy} onClick={() => goTo(steps[steps.indexOf(step) - 1])}><ArrowLeft size={16} />{t('bridgeFlow.back')}</button> : <span />}
             {step === 'source' && ready && <button className={primaryClass} disabled={busy} onClick={() => goTo('design')}>{t('bridgeFlow.nextDesign')}<ArrowRight size={17} /></button>}
             {step === 'design' && <button className={primaryClass} disabled={busy || !ready || !generatedPrompt.trim()} onClick={() => {
-              if (pending && pending.prompt !== generatedPrompt) setPending(null);
               goTo('gemini');
             }}>{t('flow.next')}<ArrowRight size={17} /></button>}
           </footer>

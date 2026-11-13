@@ -1,6 +1,10 @@
 import { Translations } from '../types';
 
 export const en: Translations = {
+  'bridgeResume.waiting': "awaiting result",
+  'bridgeResume.resume': "Resume request",
+  'bridgeResume.manualHint': "Multiple requests were open. Choose the downloaded result for “{view}”.",
+  'bridgeResume.materialsChanged': "Materials changed after this request was prepared. Import its result or start a new request with the updated materials.",
   'flux.open': "Open FLUX.2",
   'flux.openFailed': "Could not open the FLUX.2 demo. Try again.",
   'flux.attachHint': "Expand Input image(s) in the FLUX.2 demo and add the images in order, starting with 01-source-render.",
