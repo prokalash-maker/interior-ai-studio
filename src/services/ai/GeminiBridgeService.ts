@@ -100,7 +100,9 @@ class GeminiBridgeService {
       // Browser fallback: trigger simple file download
       const link = document.createElement('a');
       link.href = `data:${mimeType};base64,${cleanBase64}`;
-      link.download = defaultName;
+      link.download = /\.(png|jpe?g|webp)$/i.test(defaultName)
+        ? defaultName
+        : defaultName + (mimeType === 'image/webp' ? '.webp' : mimeType === 'image/jpeg' ? '.jpg' : '.png');
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);

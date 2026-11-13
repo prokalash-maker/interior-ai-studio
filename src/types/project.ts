@@ -83,6 +83,15 @@ export type MaterialTargetSurface =
   | 'accents'
   | 'general';
 
+export interface MaterialZone {
+  id: string;
+  materialId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface MaterialReference {
   id: string;
   name: string;
@@ -92,6 +101,11 @@ export interface MaterialReference {
   imageMimeType?: string;
   url?: string;
   notes?: string;
+  brand?: string;
+  article?: string;
+  finish?: string;
+  format?: string;
+  layout?: string;
   createdAt: number;
 }
 
@@ -138,6 +152,7 @@ export interface ProjectView {
   createdAt: number;
   updatedAt: number;
   designOverride?: string;
+  materialZones?: MaterialZone[];
 }
 
 export interface ApprovedProjectDesign {
@@ -146,6 +161,7 @@ export interface ApprovedProjectDesign {
   masterImageBase64?: string;
   masterMimeType: string;
   decisions: string;
+  materialReferences?: MaterialReference[];
   styleId?: string;
   materialIds?: string[];
   surfaceAssignments?: Partial<Record<'floor' | 'walls' | 'cabinetry' | 'countertop' | 'furniture' | 'textile', string>>;

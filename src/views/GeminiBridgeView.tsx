@@ -2,7 +2,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ArrowLeft, ArrowRight, Check, ChevronDown, Clipboard, Copy, Download, ExternalLink, FolderOpen, ImageIcon, Layers, Plus, Sparkles, UploadCloud } from 'lucide-react';
 import { GeminiDownload } from '../types/electron';
 import { CloudUpscalePanel } from '../components/CloudUpscalePanel';
-import { Project, ProjectView, ApprovedProjectDesign, ProjectDesignDraft, ProjectDesignVariant, GenerationRecord, RoomType } from '../types/project';
+import { ProjectMaterials } from '../components/ProjectMaterials';
+import { MaterialZones } from '../components/MaterialZones';
+import { BridgeAsset, buildSwatchSheet, buildZoneGuide, flowUrl, fluxUrl, materialDescription, openBridgePage, saveBridgeFile } from '../services/bridgeFiles';
+import { Project, ProjectView, ApprovedProjectDesign, ProjectDesignDraft, ProjectDesignVariant, GenerationRecord, MaterialReference, MaterialZone, RoomType } from '../types/project';
 import { GenerationResult } from '../types/ai';
 import { geminiBridgeService } from '../services/ai/GeminiBridgeService';
 import {
@@ -46,7 +49,7 @@ const STYLE_NAMES: Record<string, { ru: string; uk: string; en: string }> = {
 };
 
 type BridgeStep = 'source' | 'design' | 'gemini' | 'result';
-type DownloadMode = 'browser' | 'embedded';
+type DownloadMode = 'browser' | 'embedded' | 'flow' | 'flux';
 
 interface BridgeHandoff {
   projectId: string;
@@ -59,6 +62,9 @@ interface BridgeHandoff {
   copiedReference: boolean;
   copiedPrompt: boolean;
   design: ProjectDesignDraft;
+  materials?: MaterialReference[];
+  master?: boolean;
+  imported?: boolean;
 }
 
 const handoffKey = 'visual-ai-gemini-handoff';
@@ -148,6 +154,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   const [sliderPosition, setSliderPosition] = useState(50);
   const [refinementText, setRefinementText] = useState('');
   const [upscaleOpen, setUpscaleOpen] = useState(false);
+  const [flowUpscaleOpen, setFlowUpscaleOpen] = useState(false);
+  const [flowUpscalePicker, setFlowUpscalePicker] = useState(false);
   const [draggingSource, setDraggingSource] = useState(false);
   const [draggingResult, setDraggingResult] = useState(false);
   const busyRef = useRef(false);
@@ -187,6 +195,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     setSliderPosition(50);
     setRefinementText('');
     setUpscaleOpen(false);
+    setFlowUpscaleOpen(false);
+    setFlowUpscalePicker(false);
     setPromptOverride(null);
   }, [sourceImage, selectedViewId]);
 
@@ -225,7 +235,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
 
     const pending = handoff?.projectId === currentProject?.id ? handoff : null;
     const first = views.find((view) => view.id === pending?.viewId) || views[0];
-    if (pending && first?.id === pending.viewId) setStep('gemini');
+    if (pending && first?.id === pending.viewId && !pending.imported) setStep('gemini');
     else if (first?.resultGenerationId || first?.resultImageBase64) setStep('result');
     if (first) {
       setSelectedViewId(first.id);
@@ -355,6 +365,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     let resultMime = view.resultMimeType || 'image/png';
     let resultWidth = view.resultWidth || 1024;
     let resultHeight = view.resultHeight || 768;
+    let provider = 'gemini_bridge';
+    let model = 'gemini-web-personal';
     if (!resultBase64 && view.resultGenerationId) {
       const record = await dbService.getGenerationById(view.resultGenerationId);
       if (record?.outputImageBase64) {
@@ -364,6 +376,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
         promptUsed = record.prompt;
         resultWidth = record.width;
         resultHeight = record.height;
+        provider = record.provider;
+        model = record.model;
       }
     }
     if (requestId !== viewSelectionRequestRef.current || !alive.current) return;
@@ -376,7 +390,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
         height: resultHeight,
         promptUsed,
       });
-      setImportedResult({ ...result, id: view.resultGenerationId || 'gemini_bridge_legacy_' + view.id });
+      setImportedResult({ ...result, provider, model, id: view.resultGenerationId || 'gemini_bridge_legacy_' + view.id });
     } else {
       setImportedResult(null);
     }
@@ -399,6 +413,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       masterImageBase64: importedResult.imageBase64,
       masterMimeType: importedResult.mimeType,
       decisions,
+      materialReferences: currentProject?.materialReferences?.map(({ imageBase64: _image, ...item }) => item),
       styleId,
       materialIds: selectedMaterials,
       surfaceAssignments,
@@ -429,6 +444,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       masterImageBase64: importedResult.id.startsWith('gemini_bridge_legacy_') ? importedResult.imageBase64 : undefined,
       masterMimeType: importedResult.mimeType,
       decisions: [customStyle, customMaterials, customLighting, customDecor].filter(Boolean).join('\n'),
+      materialReferences: currentProject.materialReferences?.map(({ imageBase64: _image, ...item }) => item),
       styleId, materialIds: [...selectedMaterials], surfaceAssignments: { ...surfaceAssignments },
       lightingId, atmosphereId, roomType, geometryMode, cameraOptics, negativePrompt,
       customStyle, customMaterials, customLighting, customDecor, approvedAt: Date.now(),
@@ -440,6 +456,12 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   };
 
   const handleApplyDesignVariant = async (variant: ProjectDesignVariant) => {
+    if (variant.materialReferences) {
+      await saveMaterials(variant.materialReferences.map((item) => {
+        const original = currentProject?.materialReferences?.find((ref) => ref.id === item.id && materialDescription(ref) === materialDescription(item));
+        return { ...item, imageBase64: original?.imageBase64 };
+      }), true);
+    }
     setStyleId(variant.styleId || 'modern');
     setSelectedMaterials(variant.materialIds || []);
     setSurfaceAssignments(variant.surfaceAssignments || {});
@@ -469,14 +491,14 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
           imageBase64: record.outputImageBase64.replace(/^data:image\/[\w+.-]+;base64,/, ''),
           mimeType: match?.[1] || variant.masterMimeType,
           width: record.width, height: record.height, promptUsed: record.prompt,
-        }), id: record.id });
+        }), id: record.id, provider: record.provider, model: record.model });
       }
     }
     setBridgeMessage(t('bridge.variantRestored', { name: variant.name }));
   };
 
-  const handleCopyMasterImage = async () => {
-    if (!approvedDesign) return;
+  const loadMasterImage = async (): Promise<BridgeAsset> => {
+    if (!approvedDesign) throw new Error('No approved design');
     let image = approvedDesign.masterImageBase64;
     let mimeType = approvedDesign.masterMimeType;
     if (!image && approvedDesign.masterGenerationId) {
@@ -490,7 +512,12 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     if (!image) {
       throw new Error(t('bridge.masterCopyFailed'));
     }
-    const copied = await geminiBridgeService.copyImageToClipboard(image, mimeType);
+    return { name: '02-approved-design', image, mime: mimeType };
+  };
+
+  const handleCopyMasterImage = async () => {
+    const asset = await loadMasterImage();
+    const copied = await geminiBridgeService.copyImageToClipboard(asset.image, asset.mime);
     if (!copied) throw new Error(t('bridge.masterCopyFailed'));
     updateHandoffFlags({ copiedReference: true });
     setBridgeMessage(t('bridge.masterCopied'));
@@ -512,15 +539,17 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   };
 
   const view = projectViews.find((item) => item.id === selectedViewId);
+  const materialReferences = currentProject?.materialReferences || [];
+  const zones = (view?.materialZones || []).filter((zone) => materialReferences.some((item) => item.id === zone.materialId));
   const ready = Boolean(view && sourceImage && !sourceImageFailed);
   const reference = Boolean(approvedDesign && approvedDesign.masterViewId !== view?.id);
   const pending = handoff?.projectId === currentProject?.id && handoff?.viewId === view?.id ? handoff : null;
+  const packageHandoff = pending && (pending.mode === 'flow' || pending.mode === 'flux');
   const label = (item: { labelRu: string; labelUk: string; labelEn: string }) =>
     language === 'ru' ? item.labelRu : language === 'uk' ? item.labelUk : item.labelEn;
   const style = INTERIOR_STYLES.find((item) => item.id === styleId) || INTERIOR_STYLES[0];
   const baseline = buildArchitecturalPositivePrompt({
     roomType: roomType as RoomType, style, geometryMode, lightingId, atmosphereId, selectedMaterials,
-    materialReferences: currentProject?.materialReferences?.map((item) => ({ ...item, imageBase64: undefined })),
     customStyle, customMaterials, customLighting, customDecor,
   });
   const scope = {
@@ -532,16 +561,55 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     const material = MATERIAL_OPTIONS.find((item) => item.id === surfaceAssignments[id]);
     return material ? [id + ': ' + material.promptDescription] : [];
   });
-  const generatedPrompt = promptOverride ?? [
+  const assignedSurfaces = new Set(materialReferences.map((item) => item.targetSurface));
+  const referenceAssignments = materialReferences.map((item, index) =>
+    'M' + (index + 1) + ' · ' + item.targetSurface + ': ' + materialDescription(item));
+  const swatchItems = materialReferences.filter((item) => item.imageBase64);
+  const genericAssignments = assignments.filter((assignment) => !assignedSurfaces.has(assignment.split(':')[0] as MaterialReference['targetSurface']));
+  const basePrompt = [
     'Generate a photorealistic interior visualization from the first attached image. Return the image.',
     scope[geometryMode],
     baseline.slice(baseline.indexOf('Space Type:')).split('Photographic & Rendering Standards:')[0].trim(),
-    assignments.length && 'Use these finishes on their assigned surfaces: ' + assignments.join('; '),
+    genericAssignments.length && 'Use these generic finishes where no product specification is given: ' + genericAssignments.join('; '),
     'Architectural photography, lens character: ' + ({ tilt_shift_24mm: '24mm tilt-shift', prime_35mm: '35mm prime', '50mm': '50mm' }[cameraOptics] || 'natural'),
     negativePrompt && 'Avoid: ' + negativePrompt,
-    reference && 'Use the second attached image as the approved material and lighting reference. Follow the composition of the first image.',
     view?.designOverride && 'For this view: ' + view.designOverride,
   ].filter(Boolean).join('\n\n');
+  const generatedPrompt = [
+    promptOverride ?? basePrompt,
+    reference && 'Use the second attached image as the approved material and lighting reference. Follow the composition of the first image.',
+    referenceAssignments.length && 'Project material schedule. These assignments override generic palette suggestions: ' + referenceAssignments.join('; '),
+    swatchItems.length && 'Use the attached numbered material sheet for color and texture. Never render its labels. ' +
+      swatchItems.map((item) => 'M' + (materialReferences.indexOf(item) + 1) + ' → ' + item.targetSurface).join('; '),
+    zones.length && 'Use the separate marked zone guide as an approximate location reference. Match materials within the indicated architectural surfaces and follow their real boundaries. Do not render colors, boxes or labels from the guide. ' +
+      zones.map((zone, index) => 'Z' + (index + 1) + ' → M' + (materialReferences.findIndex((item) => item.id === zone.materialId) + 1)).join('; '),
+  ].filter(Boolean).join('\n\n');
+
+  function zoneGuide() {
+    return buildZoneGuide(toImageDataUrl(sourceImage || '', sourceMimeType), zones, materialReferences);
+  }
+
+  async function saveZones(next: MaterialZone[]) {
+    await persistProjectViews(projectViews.map((item) => item.id === selectedViewId ? { ...item, materialZones: next, updatedAt: Date.now() } : item));
+    if (pending) setPending(null);
+  }
+
+  async function saveMaterials(items: MaterialReference[], inAction = false) {
+    if (!inAction && busyRef.current) throw new Error('Bridge is busy');
+    const project = currentProjectRef.current;
+    if (!project) return;
+    const updated = { ...project, materialReferences: items, designDraft: buildDesignDraft(), updatedAt: Date.now() };
+    busyRef.current = true;
+    try {
+      await dbService.saveProject(updated, true);
+      currentProjectRef.current = updated;
+      if (alive.current) onUpdateProject?.(updated);
+      setPromptOverride(null);
+      if (pending) setPending(null);
+    } finally {
+      if (!inAction) busyRef.current = false;
+    }
+  }
 
   function setPending(value: BridgeHandoff | null) {
     setHandoff(value);
@@ -555,17 +623,18 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
 
   useEffect(() => {
     const api = window.electronAPI;
-    if (!api || !pending) {
+    if (!api || !pending || pending.mode === 'flow' || pending.mode === 'flux') {
       setDownloads([]);
       return;
     }
+    const mode = pending.mode;
     let stopped = false;
     let checking = false;
     const refresh = async () => {
       if (checking) return;
       checking = true;
       try {
-        const items = await api.listRecentGeminiImages(pending.mode, pending.since);
+        const items = await api.listRecentGeminiImages(mode, pending.since);
         if (!stopped) setDownloads(items.filter((item) => !importedPaths.includes(item.filePath)));
       } catch {
         // Manual import is available when the download folder is unavailable.
@@ -639,15 +708,20 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       ? 'Edit this interior visualization. Keep the layout, camera and all unrelated details. Return the revised image.\n\n' + refinementText.trim()
       : generatedPrompt.trim();
     const since = Date.now();
-    const opening = mode === 'embedded' ? geminiBridgeService.openGeminiWeb() : geminiBridgeService.openGeminiExternal();
-    const copiedImage = await geminiBridgeService.copyImageToClipboard(parent?.imageBase64 || sourceImage, parent?.mimeType || sourceMimeType);
+    const externalPackage = mode === 'flow' || mode === 'flux';
+    const opening = externalPackage ? openBridgePage(mode === 'flow' ? flowUrl : fluxUrl).then(() => true, () => false)
+      : mode === 'embedded' ? geminiBridgeService.openGeminiWeb() : geminiBridgeService.openGeminiExternal();
+    const copiedImage = !externalPackage && await geminiBridgeService.copyImageToClipboard(parent?.imageBase64 || sourceImage, parent?.mimeType || sourceMimeType);
     if (!await opening) throw new Error('open-gemini');
     setDownloads([]);
     setPending({ projectId: currentProject.id, viewId: view.id, mode, since, prompt, parentId: parent?.id,
-      copiedImage, copiedReference: false, copiedPrompt: false, design: buildDesignDraft() });
+      copiedImage, copiedReference: false, copiedPrompt: false, design: buildDesignDraft(), master: reference && !parent,
+      materials: materialReferences.map(({ imageBase64: _swatch, ...item }) => item) });
     goTo('gemini');
-    if (copiedImage) setBridgeMessage(t('bridgeFlow.sourceCopied'));
-    else setErrorMessage(t('bridgeFlow.copyImageFailed'));
+    if (!externalPackage) {
+      if (copiedImage) setBridgeMessage(t('bridgeFlow.sourceCopied'));
+      else setErrorMessage(t('bridgeFlow.copyImageFailed'));
+    }
   }
 
   function handoffImage() {
@@ -655,7 +729,18 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     return { image: sourceImage || '', mime: sourceMimeType };
   }
 
-  async function importResult(file: File, downloadPath?: string) {
+  async function prepareFiles() {
+    if (!pending || !window.electronAPI) return;
+    const input = handoffImage();
+    const files: BridgeAsset[] = [{ name: '01-source-render', ...input }];
+    if (pending.master ?? (reference && !pending.parentId)) files.push(await loadMasterImage());
+    const sheet = pending.parentId ? null : await buildSwatchSheet(materialReferences);
+    if (sheet) files.push({ ...sheet, name: '03-material-swatches' });
+    if (zones.length && !pending.parentId) files.push(await zoneGuide());
+    await window.electronAPI.prepareBridgeFiles(files, pending.prompt);
+  }
+
+  async function importResult(file: File, downloadPath?: string, upscale = false) {
     if (!currentProject || !view || !ready) return;
     const data = await geminiBridgeService.processImportedFile(file).catch(() => null);
     if (!data) {
@@ -669,16 +754,31 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     }
     const design = pending?.design || buildDesignDraft();
     const size = Math.max(data.width, data.height);
+    const isFlow = pending?.mode === 'flow' || upscale;
+    if (upscale && importedResult && (data.width < importedResult.width || data.height < importedResult.height ||
+        (data.width === importedResult.width && data.height === importedResult.height))) {
+      setErrorMessage(t('flow.upscaleSize'));
+      return;
+    }
+    const promptUsed = upscale ? '2K upscale of an existing visualization in Google Flow.' : pending?.prompt || generatedPrompt;
     const result = geminiBridgeService.createBridgeGenerationResult({
-      ...data, promptUsed: pending?.prompt || generatedPrompt, resolution: size >= 3000 ? '4k' : size >= 1800 ? '2k' : '1k',
+      ...data, promptUsed, resolution: size >= 3000 ? '4k' : size >= 1800 ? '2k' : '1k',
     });
+    if (isFlow) {
+      result.provider = 'google_flow';
+      result.model = 'google-flow-web';
+    } else if (pending?.mode === 'flux') {
+      result.provider = 'flux_bridge';
+      result.model = 'flux-2-klein-4b';
+    }
     const record: GenerationRecord = {
-      id: result.id, projectId: currentProject.id, viewId: view.id, parentId: pending?.parentId,
+      id: result.id, projectId: currentProject.id, viewId: view.id, parentId: upscale ? importedResult?.id : pending?.parentId,
       sourceImagePath: view.sourceImagePath || view.name, sourceImageBase64: source,
       outputImagePath: downloadPath || file.name, outputImageBase64: toImageDataUrl(result.imageBase64, result.mimeType),
       prompt: result.promptUsed, styleId: design.styleId || styleId, roomType: (design.roomType || roomType) as RoomType,
       geometryMode: design.geometryMode || geometryMode, lighting: design.lightingId, materials: design.materialIds,
       atmosphere: design.atmosphereId, provider: result.provider, model: result.model, width: result.width, height: result.height,
+      materialReferences: pending?.materials ?? materialReferences.map(({ imageBase64: _swatch, ...item }) => item),
       latencyMs: 0, createdAt: result.timestamp, resolution: result.resolution, costUsd: 0,
     };
     await dbService.saveGeneration(record, true);
@@ -691,9 +791,11 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       setImportedPaths(paths);
       sessionStorage.setItem(recentImportKey, JSON.stringify(paths));
     }
-    if (pending) setPending(null);
+    if (pending) setPending(packageHandoff && !upscale ? { ...pending, imported: true } : null);
     setImportedResult(result);
     setUpscaleOpen(false);
+    setFlowUpscaleOpen(false);
+    setFlowUpscalePicker(false);
     setRefinementText('');
     setSliderPosition(50);
     setBridgeMessage(t('bridge.imported'));
@@ -704,7 +806,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     const link = document.createElement('a');
     link.href = toImageDataUrl(result.imageBase64, result.mimeType);
     const extension = result.mimeType === 'image/jpeg' ? 'jpg' : result.mimeType === 'image/webp' ? 'webp' : 'png';
-    link.download = 'Gemini-' + result.timestamp + '.' + extension;
+    link.download = (result.provider === 'google_flow' ? 'Flow-' : result.provider === 'flux_bridge' ? 'FLUX-' : 'Gemini-') + result.timestamp + '.' + extension;
     link.click();
   }
 
@@ -729,15 +831,18 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     <div ref={workspaceRef} className="bridge-workspace min-w-0 flex-1 overflow-y-auto">
       <div className="bridge-container">
         <header className="bridge-header">
-          <div><p className="bridge-eyebrow"><Sparkles size={15} />Gemini Bridge</p><h1>{t('bridgeFlow.title')}</h1><p className="bridge-muted">{t('bridgeFlow.subtitle')}</p></div>
+          <div><p className="bridge-eyebrow"><Sparkles size={15} />Gemini Bridge</p><h1>{t('bridgeFlow.title')}</h1><p className="bridge-muted">{t('flow.subtitle')}</p></div>
           {currentProject && <span className="bridge-project"><Layers size={16} /><span>{currentProject.name}</span></span>}
         </header>
         <nav aria-label={t('bridgeFlow.steps')} className="bridge-steps">
           {steps.map((item, index) => <button key={item} aria-current={step === item ? 'step' : undefined}
-            disabled={busy || (item !== 'source' && !ready)} onClick={() => goTo(item)}><span>{index + 1}</span>{t('bridgeFlow.' + item)}</button>)}
+            disabled={busy || (item !== 'source' && !ready)} onClick={() => goTo(item)}><span>{index + 1}</span>{t(item === 'gemini' ? 'flow.step' : 'bridgeFlow.' + item)}</button>)}
         </nav>
         <input ref={sourceInputRef} type="file" accept={imageAccept} hidden onChange={(event) => selectFile(event, uploadSource)} />
-        <input ref={fileInputRef} type="file" accept={imageAccept} hidden onChange={(event) => selectFile(event, importResult)} />
+        <input ref={fileInputRef} type="file" accept={imageAccept} hidden onChange={(event) => {
+          selectFile(event, (file) => importResult(file, undefined, flowUpscalePicker));
+          setFlowUpscalePicker(false);
+        }} />
         <input ref={anglesInputRef} type="file" accept={imageAccept} multiple hidden onChange={(event) => {
           const files = Array.from(event.currentTarget.files || []);
           if (files?.length) void run(() => handleAddAngleFiles(files));
@@ -745,8 +850,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
         }} />
         <section className="bridge-card" aria-busy={busy}>
           <div className="bridge-card-heading">
-            <h2 ref={headingRef} tabIndex={-1}>{t('bridgeFlow.' + step + 'Heading')}</h2>
-            <p className="bridge-muted">{t('bridgeFlow.' + step + 'Hint')}</p>
+            <h2 ref={headingRef} tabIndex={-1}>{t(step === 'gemini' ? 'flow.heading' : 'bridgeFlow.' + step + 'Heading')}</h2>
+            <p className="bridge-muted">{t(step === 'gemini' ? 'flow.hint' : 'bridgeFlow.' + step + 'Hint')}</p>
           </div>
           {step === 'source' && (!currentProject ? <button className={primaryClass} onClick={onNewProject}><Plus size={17} />{t('action.newProject')}</button> :
             <div className="bridge-source-layout">
@@ -783,6 +888,13 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
               {(['strict', 'balanced', 'creative'] as const).map((mode) => <button key={mode} className="bridge-choice" aria-pressed={geometryMode === mode}
                 onClick={() => { setGeometryMode(mode); setPromptOverride(null); }}><strong>{t('bridgeFlow.' + mode)}</strong><span>{t('bridgeFlow.' + mode + 'Hint')}</span></button>)}
             </div></div>
+            <details className="bridge-details"><summary>{t('catalog.title')}<ChevronDown size={16} /></summary>
+              <ProjectMaterials items={materialReferences} disabled={busy} onChange={saveMaterials} />
+            </details>
+            {sourceImage && <details className="bridge-details"><summary>{t('zones.title')}<ChevronDown size={16} /></summary>
+              <MaterialZones source={toImageDataUrl(sourceImage, sourceMimeType)} materials={materialReferences} zones={zones}
+                disabled={busy} onSave={(next) => { void run(() => saveZones(next)); }} />
+            </details>}
             <details className="bridge-details"><summary>{t('bridgeFlow.materials')}<ChevronDown size={16} /></summary>
               <div className="bridge-stack">
                 <div className="bridge-chips">{MATERIAL_OPTIONS.map((item) => <button key={item.id} className="bridge-chip"
@@ -808,7 +920,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
               </div>
             </details>
             <details className="bridge-details"><summary>{t('bridgeFlow.prompt')}<ChevronDown size={16} /></summary><div className="bridge-stack">
-              <textarea aria-label={t('bridgeFlow.prompt')} className={controlClass} rows={8} value={generatedPrompt} onChange={(event) => setPromptOverride(event.target.value)} />
+              <textarea aria-label={t('bridgeFlow.prompt')} className={controlClass} rows={8} value={promptOverride ?? basePrompt} onChange={(event) => setPromptOverride(event.target.value)} />
+              {(referenceAssignments.length > 0 || reference) && <p className="bridge-muted">{t('catalog.promptHint')}</p>}
               {promptOverride !== null && <button className={buttonClass} onClick={() => setPromptOverride(null)}>{t('bridge.regeneratePrompt')}</button>}
             </div></details>
           </fieldset>}
@@ -816,8 +929,47 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
           {step === 'gemini' && <div className="bridge-stack">
             {!pending ? <div className="bridge-actions">
               <button className={primaryClass} disabled={busy || !generatedPrompt.trim()} onClick={() => run(() => startGemini('browser'), t('bridge.openFailed'))}><ExternalLink size={17} />{t('bridge.openGemini')}</button>
+              <button className={buttonClass} disabled={busy || !generatedPrompt.trim()} onClick={() => run(() => startGemini('flow'), t('flow.openFailed'))}><ExternalLink size={17} />{t('flow.open')}</button>
+              <button className={buttonClass} disabled={busy || !generatedPrompt.trim()} onClick={() => run(() => startGemini('flux'), t('flux.openFailed'))}><ExternalLink size={17} />{t('flux.open')}</button>
               {window.electronAPI && <button className={buttonClass} disabled={busy || !generatedPrompt.trim()} onClick={() => run(() => startGemini('embedded'), t('bridge.openFailed'))}>{t('bridgeFlow.embedded')}</button>}
-            </div> : <>
+            </div> : packageHandoff ? <>
+              <ol className="bridge-instructions">
+                <li><div><strong>{t('flow.attach')}</strong><p>{t(pending.mode === 'flux' ? 'flux.attachHint' : 'flow.attachHint')}</p></div>
+                  {window.electronAPI && <button className={buttonClass} disabled={busy} onClick={() => run(prepareFiles, t('flow.filesFailed'))}><FolderOpen size={16} />{t('flow.files')}</button>}</li>
+                {!window.electronAPI && <li><div><strong>{t('flow.files')}</strong><p>{t('flow.browserFiles')}</p></div>
+                  <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                    const input = handoffImage();
+                    if (!await geminiBridgeService.prepareTempFileAndReveal(input.image, '01-source-render', input.mime)) throw new Error('source');
+                  }, t('flow.filesFailed'))}>{t('bridgeFlow.source')}</button>
+                  {reference && !pending.parentId && <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                    const image = await loadMasterImage();
+                    if (!await geminiBridgeService.prepareTempFileAndReveal(image.image, image.name, image.mime)) throw new Error('reference');
+                  }, t('flow.filesFailed'))}>{t('bridge.masterAvailable')}</button>}
+                  {swatchItems.length > 0 && !pending.parentId && <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                    const image = await buildSwatchSheet(materialReferences);
+                    if (!image || !await geminiBridgeService.prepareTempFileAndReveal(image.image, '03-material-swatches.png', image.mime)) throw new Error('swatches');
+                  }, t('flow.filesFailed'))}>{t('catalog.sheet')}</button>}
+                  {zones.length > 0 && !pending.parentId && <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                    const image = await zoneGuide();
+                    saveBridgeFile(image.image, image.name + '.png');
+                  }, t('flow.filesFailed'))}>{t('zones.title')}</button>}</li>}
+                <li><div><strong>{t(pending.mode === 'flux' ? 'flux.generate' : 'flow.generate')}</strong><p>{t(pending.mode === 'flux' ? 'flux.generateHint' : 'flow.generateHint')}</p></div>
+                  <button className={primaryClass} disabled={busy} onClick={() => run(async () => {
+                    if (!await geminiBridgeService.copyText(pending.prompt)) throw new Error('clipboard');
+                    updateHandoffFlags({ copiedPrompt: true });
+                    setBridgeMessage(t(pending.mode === 'flux' ? 'flux.copied' : 'flow.copied'));
+                  }, t('bridgeFlow.copyPromptFailed'))}>{pending.copiedPrompt ? <Check size={16} /> : <Copy size={16} />}{t('bridgeFlow.copyRequest')}</button></li>
+                <li><div><strong>{t('flow.import')}</strong><p>{t(pending.mode === 'flux' ? 'flux.importHint' : 'flow.importHint')}</p></div>
+                  <button className={buttonClass} disabled={busy} onClick={() => { setFlowUpscalePicker(false); fileInputRef.current?.click(); }}><Download size={16} />{t('bridge.importResult')}</button></li>
+              </ol>
+              <div className="bridge-actions">
+                <button className={buttonClass} disabled={busy} onClick={() => run(() => openBridgePage(pending.mode === 'flux' ? fluxUrl : flowUrl), t(pending.mode === 'flux' ? 'flux.openFailed' : 'flow.openFailed'))}>{t(pending.mode === 'flux' ? 'flux.open' : 'flow.open')}</button>
+                <button className={buttonClass} disabled={busy} onClick={() => setPending(null)}>{t('bridgeFlow.restart')}</button>
+              </div>
+              <details className="bridge-details"><summary>{t('bridgeFlow.prompt')}<ChevronDown size={16} /></summary><div>
+                <textarea className={controlClass} aria-label={t('bridgeFlow.prompt')} rows={5} readOnly value={pending.prompt} onFocus={(event) => event.currentTarget.select()} />
+              </div></details>
+            </> : <>
               <ol className="bridge-instructions">
                 <li><div><strong>{t('bridgeFlow.pasteSource')}</strong><p>{t('bridgeFlow.pasteSourceHint')}</p></div>
                   <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
@@ -827,6 +979,18 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
                   }, t('bridgeFlow.copyImageFailed'))}>{pending.copiedImage ? <Check size={16} /> : <Copy size={16} />}{t('bridgeFlow.copyImage')}</button></li>
                 {reference && !pending.parentId && <li><div><strong>{t('bridgeFlow.pasteReference')}</strong><p>{t('bridge.stepPasteWithMaster')}</p></div>
                   <button className={buttonClass} disabled={busy} onClick={() => run(handleCopyMasterImage, t('bridge.masterCopyFailed'))}>{pending.copiedReference && <Check size={16} />}{t('bridge.copyMasterImage')}</button></li>}
+                {swatchItems.length > 0 && !pending.parentId && <li><div><strong>{t('catalog.sheet')}</strong><p>{t('catalog.sheetHint')}</p></div>
+                  <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                    const image = await buildSwatchSheet(materialReferences);
+                    if (!image || !await geminiBridgeService.copyImageToClipboard(image.image, image.mime)) throw new Error('swatches');
+                    setBridgeMessage(t('catalog.sheetCopied'));
+                  }, t('catalog.sheetFailed'))}><Copy size={16} />{t('catalog.copySheet')}</button></li>}
+                {zones.length > 0 && !pending.parentId && <li><div><strong>{t('zones.title')}</strong><p>{t('zones.transfer')}</p></div>
+                  <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                    const image = await zoneGuide();
+                    if (!await geminiBridgeService.copyImageToClipboard(image.image, image.mime)) throw new Error('zone-guide');
+                    setBridgeMessage(t('zones.copied'));
+                  }, t('flow.filesFailed'))}><Copy size={16} />{t('zones.copy')}</button></li>}
                 <li><div><strong>{t('bridgeFlow.pastePrompt')}</strong><p>{t('bridgeFlow.pastePromptHint')}</p></div>
                   <button className={primaryClass} disabled={busy} onClick={() => run(async () => {
                     if (!await geminiBridgeService.copyText(pending.prompt)) throw new Error('clipboard');
@@ -837,6 +1001,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
               </ol>
               <details className="bridge-details"><summary>{t('bridgeFlow.transferOptions')}<ChevronDown size={16} /></summary><div className="bridge-stack">
                 <div className="bridge-actions">
+                  {window.electronAPI && <button className={buttonClass} disabled={busy} onClick={() => run(prepareFiles, t('flow.filesFailed'))}><FolderOpen size={16} />{t('flow.files')}</button>}
                   <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
                     const input = handoffImage();
                     if (!await geminiBridgeService.prepareTempFileAndReveal(input.image, 'gemini-source.png', input.mime)) throw new Error('file');
@@ -849,11 +1014,12 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
             </>}
           </div>}
 
-          {(step === 'gemini' || step === 'result') && pending && downloads.length > 0 && <div className="bridge-downloads">
+          {(step === 'gemini' || step === 'result') && pending && !packageHandoff && downloads.length > 0 && <div className="bridge-downloads">
             <h3>{t('bridgeFlow.foundDownloads')}</h3>
             {downloads.map((item) => <div key={item.filePath} className="bridge-download">
               <span><Download size={16} />{item.fileName}</span><button className={primaryClass} disabled={busy || item.byteLength > 50 * 1024 * 1024}
                 onClick={() => run(async () => {
+                  if (pending.mode === 'flow' || pending.mode === 'flux') return;
                   const data = await window.electronAPI?.readRecentGeminiImage(pending.mode, pending.since, item.filePath);
                   if (!data) throw new Error('read-download');
                   await importResult(imageFileFromBase64(data.base64, data.fileName, data.mimeType), item.filePath);
@@ -876,13 +1042,23 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
               <div className="bridge-actions">
                 <button className={primaryClass} onClick={() => downloadResult(importedResult)}><Download size={17} />{t('bridge.saveImage')}</button>
                 <button className={buttonClass} aria-expanded={upscaleOpen} onClick={() => setUpscaleOpen((open) => !open)}><Sparkles size={16} />{t('cloudUpscale.title')}</button>
+                <button className={buttonClass} aria-expanded={flowUpscaleOpen} onClick={() => setFlowUpscaleOpen((open) => !open)}><Sparkles size={16} />{t('flow.upscale')}</button>
               </div>
               {upscaleOpen && <CloudUpscalePanel key={importedResult.id} result={importedResult} onSettings={onNavigateSettings} />}
+              {flowUpscaleOpen && <div className="bridge-cloud bridge-stack">
+                <p className="bridge-muted">{t('flow.upscaleHint')}</p>
+                <div className="bridge-actions">
+                  <button className={buttonClass} disabled={busy} onClick={() => run(() => openBridgePage(flowUrl), t('flow.openFailed'))}><ExternalLink size={16} />{t('flow.open')}</button>
+                  <button className={buttonClass} onClick={() => downloadResult(importedResult)}><Download size={16} />{t('bridge.saveImage')}</button>
+                  <button className={buttonClass} disabled={busy} onClick={() => { setFlowUpscalePicker(true); fileInputRef.current?.click(); }}>{t('bridge.importResult')}</button>
+                </div>
+              </div>}
               <details className="bridge-details"><summary>{t('bridgeFlow.refine')}<ChevronDown size={16} /></summary><div className="bridge-stack">
                 <textarea className={controlClass} aria-label={t('bridgeFlow.refine')} placeholder={t('bridgeFlow.refinePlaceholder')} rows={2}
                   value={refinementText} onChange={(event) => setRefinementText(event.target.value)} />
                 <button className={primaryClass} disabled={busy || !refinementText.trim()} onClick={() => run(() => startGemini('browser', true), t('bridge.openFailed'))}>
                   <ExternalLink size={16} />{t('bridgeFlow.openRefinement')}</button>
+                <button className={buttonClass} disabled={busy || !refinementText.trim()} onClick={() => run(() => startGemini('flow', true), t('flow.openFailed'))}><ExternalLink size={16} />{t('flow.refine')}</button>
               </div></details>
               <details className="bridge-details"><summary>{t('bridgeFlow.designActions')}<ChevronDown size={16} /></summary><div className="bridge-actions">
                 <button className={buttonClass} disabled={busy} onClick={() => run(handleApproveDesign)}>{t('bridge.approveAsMaster')}</button>
@@ -890,7 +1066,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
               </div></details>
             </>}
             <button className={'bridge-dropzone bridge-result-drop' + (draggingResult ? ' is-dragging' : '')} disabled={busy || !ready}
-              onClick={() => fileInputRef.current?.click()} onDragOver={(event) => { event.preventDefault(); setDraggingResult(true); }}
+              onClick={() => { setFlowUpscalePicker(false); fileInputRef.current?.click(); }} onDragOver={(event) => { event.preventDefault(); setDraggingResult(true); }}
               onDragLeave={() => setDraggingResult(false)} onDrop={(event) => { setDraggingResult(false); dropFile(event, importResult); }}>
               <ImageIcon size={25} /><strong>{t(importedResult ? 'bridgeFlow.importAnother' : 'bridgeFlow.chooseResult')}</strong><span>{t('bridgeFlow.dropHint')}</span>
             </button>
@@ -911,7 +1087,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
             {step === 'design' && <button className={primaryClass} disabled={busy || !ready || !generatedPrompt.trim()} onClick={() => {
               if (pending && pending.prompt !== generatedPrompt) setPending(null);
               goTo('gemini');
-            }}>{t('bridgeFlow.nextGemini')}<ArrowRight size={17} /></button>}
+            }}>{t('flow.next')}<ArrowRight size={17} /></button>}
           </footer>
         </section>
       </div>

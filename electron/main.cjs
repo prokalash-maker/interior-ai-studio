@@ -495,6 +495,26 @@ function setupIPC() {
     return data.length <= 50 * 1024 * 1024 ? data.toString('base64') : null;
   });
 
+  ipcMain.handle('bridge:prepareFiles', async (_event, files, prompt) => {
+    if (!Array.isArray(files) || files.length < 1 || files.length > 4 ||
+        typeof prompt !== 'string' || prompt.length > 100000) throw new Error('Invalid bridge package');
+    const validMimes = new Map([['image/png', 'png'], ['image/jpeg', 'jpg'], ['image/webp', 'webp']]);
+    const assets = files.map(({ name, image, mime }) => {
+      if (!/^[a-z0-9-]{1,64}$/.test(name) || !validMimes.has(mime) ||
+          typeof image !== 'string' || image.length > 70 * 1024 * 1024) throw new Error('Invalid bridge image');
+      const bytes = Buffer.from(image.replace(/^data:image\/[\w.+-]+;base64,/, ''), 'base64');
+      if (!bytes.length || bytes.length > 50 * 1024 * 1024) throw new Error('Invalid bridge image size');
+      return { name: name + '.' + validMimes.get(mime), bytes };
+    });
+    const root = path.join(app.getPath('temp'), 'Visual AI transfers');
+    await fs.promises.mkdir(root, { recursive: true });
+    const folder = await fs.promises.mkdtemp(path.join(root, 'render-'));
+    for (const asset of assets) await fs.promises.writeFile(path.join(folder, asset.name), asset.bytes, { flag: 'wx' });
+    await fs.promises.writeFile(path.join(folder, 'request.txt'), prompt, { encoding: 'utf8', flag: 'wx' });
+    const error = await shell.openPath(folder);
+    if (error) throw new Error(error);
+  });
+
   ipcMain.handle('gemini:saveSourceTemp', async (_event, fileName, base64Data, mimeType = 'image/png') => {
     try {
       const allowed = new Set(['image/png', 'image/jpeg', 'image/webp']);

@@ -31,7 +31,7 @@ export const HistoryView: React.FC<{ expertMode: boolean; onSettings: () => void
     Promise.all([dbService.getAllGenerations(), dbService.getAllProjects()]).then(([records, projectRows]) => {
       if (!active) return;
       const sorted = [...records].sort((a, b) => b.createdAt - a.createdAt);
-      setGenerations(expertMode ? sorted : sorted.filter((record) => record.provider === 'gemini_bridge'));
+      setGenerations(expertMode ? sorted : sorted.filter((record) => ['gemini_bridge', 'google_flow', 'flux_bridge'].includes(record.provider)));
       setProjects(projectRows);
       setSelectedGenerationId((current) => current && sorted.some((record) => record.id === current) ? current : (sorted[0]?.id || ''));
     }).finally(() => { if (active) setLoading(false); });
@@ -51,6 +51,8 @@ export const HistoryView: React.FC<{ expertMode: boolean; onSettings: () => void
     if (!provider) return 'AI Render';
     if (provider.toLowerCase().includes('comfyui')) return 'ComfyUI';
     if (provider.toLowerCase().includes('gemini_bridge')) return 'Gemini Bridge';
+    if (provider === 'google_flow') return 'Google Flow';
+    if (provider === 'flux_bridge') return 'FLUX.2 Klein 4B';
     if (provider.toLowerCase().includes('gemini')) return 'Google Gemini';
     return provider;
   };
