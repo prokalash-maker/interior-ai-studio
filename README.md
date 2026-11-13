@@ -4,6 +4,8 @@
 
 ## Быстрый запуск
 
+Готовые установщик и portable-версия для Windows x64 доступны в [GitHub Releases](https://github.com/prokalash-maker/interior-ai-studio/releases).
+
 Если сборка и Electron уже есть в папке проекта, дважды нажмите **Start Visual AI.cmd**.
 
 Для работы с исходниками установите [Node.js LTS](https://nodejs.org/en/download), откройте новый терминал в папке проекта и выполните команды.

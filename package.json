@@ -1,6 +1,6 @@
 {
   "name": "interior-ai-studio",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "description": "AI Designer by V1PERCOREJZ — desktop interior visualization studio",
   "author": "V1PERCOREJZ",
   "main": "dist-electron/main.cjs",
@@ -23,7 +23,10 @@
     },
     "files": [
       "dist/**/*",
-      "dist-electron/**/*",
+      "dist-electron/main.cjs",
+      "dist-electron/preload.cjs",
+      "dist-electron/googleAuth.cjs",
+      "dist-electron/oauthConfig.cjs",
       "package.json"
     ],
     "win": {

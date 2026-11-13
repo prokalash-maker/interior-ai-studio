@@ -182,7 +182,7 @@ export const uk: Translations = {
   'cloudUpscale.cleanupFailed': "Cloudinary не підтвердив видалення тимчасового файлу. Його можна видалити в Media Library.",
   // App General
   'app.title': 'AI Designer by V1PERCOREJZ',
-  'app.version': 'v2.6.0 Pro',
+  'app.version': 'v2.7.0',
   'app.project': 'Проєкт',
   'app.autoSaved': 'Автозбереження активне',
 

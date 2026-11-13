@@ -182,7 +182,7 @@ export const en: Translations = {
   'cloudUpscale.cleanupFailed': "Cloudinary did not confirm removal of the temporary file. You can remove it from Media Library.",
   // App General
   'app.title': 'AI Designer by V1PERCOREJZ',
-  'app.version': 'v2.6.0 Pro',
+  'app.version': 'v2.7.0',
   'app.project': 'Project',
   'app.autoSaved': 'Autosave active',
 
