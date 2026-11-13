@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readRecentGeminiImage: (mode, since, filePath) => ipcRenderer.invoke('gemini:readRecentImage', mode, since, filePath),
   readGeminiClipboardImage: () => ipcRenderer.invoke('gemini:clipboardImage'),
   prepareBridgeFiles: (files, prompt) => ipcRenderer.invoke('bridge:prepareFiles', files, prompt),
+  inspectAppCache: () => ipcRenderer.invoke('cache:inspect'),
+  clearAppCache: () => ipcRenderer.invoke('cache:clear'),
   isCloudUpscaleConfigured: () => ipcRenderer.invoke('upscale:configured'),
   configureCloudUpscale: (credentials) => ipcRenderer.invoke('upscale:configure', credentials),
   runCloudUpscale: (base64, mime) => ipcRenderer.invoke('upscale:run', base64, mime),

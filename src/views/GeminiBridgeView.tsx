@@ -50,6 +50,14 @@ const STYLE_NAMES: Record<string, { ru: string; uk: string; en: string }> = {
 
 type BridgeStep = 'source' | 'design' | 'gemini' | 'result';
 type DownloadMode = 'browser' | 'embedded' | 'flow' | 'flux';
+type ResultPreview = {
+  record: GenerationRecord;
+  result: GenerationResult;
+  name: string;
+  downloadPath?: string;
+  upscale: boolean;
+  saved: boolean;
+};
 
 interface BridgeHandoff {
   projectId: string;
@@ -179,6 +187,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   const [bridgeMessage, setBridgeMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [resultPreview, setResultPreview] = useState<ResultPreview | null>(null);
   const [resultLoading, setResultLoading] = useState(false);
   const [importedResult, setImportedResult] = useState<GenerationResult | null>(null);
   const [sliderPosition, setSliderPosition] = useState(50);
@@ -192,6 +201,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   const alive = useRef(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const resultDialogRef = useRef<HTMLDialogElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceInputRef = useRef<HTMLInputElement>(null);
   const anglesInputRef = useRef<HTMLInputElement>(null);
@@ -219,6 +229,12 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     alive.current = true;
     return () => { alive.current = false; };
   }, []);
+
+  useEffect(() => {
+    const dialog = resultDialogRef.current;
+    if (resultPreview && dialog && !dialog.open) dialog.showModal();
+    if (!resultPreview && dialog?.open) dialog.close();
+  }, [resultPreview]);
 
   useEffect(() => {
     setSourceImageFailed(false);
@@ -792,7 +808,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     await window.electronAPI.prepareBridgeFiles(files, pending.prompt);
   }
 
-  async function importResult(file: File, downloadPath?: string, upscale = false) {
+  async function previewResult(file: File, downloadPath?: string, upscale = false) {
     if (!currentProject || !view || !ready) return;
     const data = await geminiBridgeService.processImportedFile(file).catch(() => null);
     if (!data) {
@@ -833,7 +849,17 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       materialReferences: pending?.materials ?? materialReferences.map(({ imageBase64: _swatch, ...item }) => item),
       latencyMs: 0, createdAt: result.timestamp, resolution: result.resolution, costUsd: 0,
     };
-    await dbService.saveGeneration(record, true);
+    setResultPreview({ record, result, name: file.name, downloadPath, upscale, saved: false });
+  }
+
+  async function saveResultPreview() {
+    if (!resultPreview || !view || !currentProject) return;
+    const { record, result, downloadPath, upscale, saved } = resultPreview;
+    if (record.projectId !== currentProject.id || record.viewId !== view.id) return;
+    if (!saved) {
+      await dbService.saveGeneration(record, true);
+      setResultPreview({ ...resultPreview, saved: true });
+    }
     await persistProjectViews(projectViews.map((item) => item.id === view.id ? {
       ...item, resultImageBase64: undefined, resultGenerationId: result.id, resultMimeType: result.mimeType,
       resultWidth: result.width, resultHeight: result.height, updatedAt: result.timestamp,
@@ -852,11 +878,42 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     setUpscaleOpen(false);
     setFlowUpscaleOpen(false);
     setFlowUpscalePicker(false);
+    setResultPreview(null);
     setRefinementText('');
     setSliderPosition(50);
     setBridgeMessage(t('bridge.imported'));
     goTo('result');
   }
+
+  async function pasteResultImage(file?: File) {
+    if (pending && !pending.copiedPrompt) {
+      setErrorMessage(t('bridgeFlow.clipboardPromptFirst'));
+      return;
+    }
+    if (file) {
+      await previewResult(file);
+      return;
+    }
+    const image = await window.electronAPI?.readGeminiClipboardImage();
+    if (!image) {
+      setErrorMessage(t('bridgeFlow.noClipboardImage'));
+      return;
+    }
+    await previewResult(imageFileFromBase64(image, 'Clipboard.png', 'image/png'));
+  }
+
+  useEffect(() => {
+    if (step !== 'result' || !ready || resultPreview) return;
+    const paste = (event: ClipboardEvent) => {
+      if (event.target instanceof Element && event.target.closest('input, textarea, [contenteditable="true"]')) return;
+      const file = Array.from(event.clipboardData?.files || []).find((item) => item.type.startsWith('image/'));
+      if (!file) return;
+      event.preventDefault();
+      void run(() => pasteResultImage(file), t('bridge.importFailed'));
+    };
+    window.addEventListener('paste', paste);
+    return () => window.removeEventListener('paste', paste);
+  });
 
   function downloadResult(result: GenerationResult) {
     const link = document.createElement('a');
@@ -896,7 +953,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
         </nav>
         <input ref={sourceInputRef} type="file" accept={imageAccept} hidden onChange={(event) => selectFile(event, uploadSource)} />
         <input ref={fileInputRef} type="file" accept={imageAccept} hidden onChange={(event) => {
-          selectFile(event, (file) => importResult(file, undefined, flowUpscalePicker));
+          selectFile(event, (file) => previewResult(file, undefined, flowUpscalePicker));
           setFlowUpscalePicker(false);
         }} />
         <input ref={anglesInputRef} type="file" accept={imageAccept} multiple hidden onChange={(event) => {
@@ -1087,8 +1144,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
                   if (pending.mode === 'flow' || pending.mode === 'flux') return;
                   const data = await window.electronAPI?.readRecentGeminiImage(pending.mode, pending.since, item.filePath);
                   if (!data) throw new Error('read-download');
-                  await importResult(imageFileFromBase64(data.base64, data.fileName, data.mimeType), item.filePath);
-                }, t('bridge.importFailed'))}>{t(item.byteLength > 50 * 1024 * 1024 ? 'bridgeFlow.tooLarge' : 'bridge.importResult')}</button>
+                  await previewResult(imageFileFromBase64(data.base64, data.fileName, data.mimeType), item.filePath);
+                }, t('bridge.importFailed'))}>{t(item.byteLength > 50 * 1024 * 1024 ? 'bridgeFlow.tooLarge' : 'importPreview.open')}</button>
             </div>)}
           </div>}
 
@@ -1132,15 +1189,10 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
             </>}
             <button className={'bridge-dropzone bridge-result-drop' + (draggingResult ? ' is-dragging' : '')} disabled={busy || !ready}
               onClick={() => { setFlowUpscalePicker(false); fileInputRef.current?.click(); }} onDragOver={(event) => { event.preventDefault(); setDraggingResult(true); }}
-              onDragLeave={() => setDraggingResult(false)} onDrop={(event) => { setDraggingResult(false); dropFile(event, importResult); }}>
+              onDragLeave={() => setDraggingResult(false)} onDrop={(event) => { setDraggingResult(false); dropFile(event, previewResult); }}>
               <ImageIcon size={25} /><strong>{t(importedResult ? 'bridgeFlow.importAnother' : 'bridgeFlow.chooseResult')}</strong><span>{t('bridgeFlow.dropHint')}</span>
             </button>
-            {window.electronAPI && <button className={buttonClass} disabled={busy || !ready} onClick={() => run(async () => {
-              if (pending && !pending.copiedPrompt) { setErrorMessage(t('bridgeFlow.clipboardPromptFirst')); return; }
-              const image = await window.electronAPI?.readGeminiClipboardImage();
-              if (!image) { setErrorMessage(t('bridgeFlow.noClipboardImage')); return; }
-              await importResult(imageFileFromBase64(image, 'Gemini.png', 'image/png'));
-            }, t('bridge.importFailed'))}><Clipboard size={16} />{t('bridgeFlow.pasteResult')}</button>}
+            {window.electronAPI && <button className={buttonClass} disabled={busy || !ready} onClick={() => run(pasteResultImage, t('bridge.importFailed'))}><Clipboard size={16} />{t('bridgeFlow.pasteResult')} <kbd className="rounded border px-1.5 py-0.5 text-xs text-studio-textMuted">Ctrl+V</kbd></button>}
           </div>}
 
           {(busy || errorMessage || bridgeMessage) && <div className="bridge-feedback" role={errorMessage ? 'alert' : 'status'}>
@@ -1155,6 +1207,30 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
           </footer>
         </section>
       </div>
+      <dialog ref={resultDialogRef} className="bridge-import-dialog" aria-labelledby="bridge-import-title"
+        onCancel={(event) => { event.preventDefault(); if (!busy) setResultPreview(null); }}>
+        {resultPreview && <section className="bridge-card">
+          <div>
+            <h2 id="bridge-import-title">{t('importPreview.title')}</h2>
+            <p className="bridge-muted mt-1">{t('importPreview.target', { project: currentProject?.name || '', view: view?.name || '' })}</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <figure className="bridge-import-image">
+              {sourceImage && <img src={toImageDataUrl(sourceImage, sourceMimeType)} alt={t('bridge.sourceLabel')} />}
+              <figcaption>{t('bridge.sourceLabel')}</figcaption>
+            </figure>
+            <figure className="bridge-import-image">
+              <img src={toImageDataUrl(resultPreview.result.imageBase64, resultPreview.result.mimeType)} alt={t('importPreview.title')} />
+              <figcaption><span className="break-all">{resultPreview.name}</span><span className="shrink-0">{resultPreview.result.width} × {resultPreview.result.height}</span></figcaption>
+            </figure>
+          </div>
+          {errorMessage && <p className="bridge-error" role="alert">{errorMessage}</p>}
+          <div className="bridge-actions justify-end">
+            <button className={buttonClass} disabled={busy} onClick={() => setResultPreview(null)}>{t('action.cancel')}</button>
+            <button className={primaryClass} disabled={busy} onClick={() => void run(saveResultPreview)}><Check size={17} />{t(busy ? 'bridgeFlow.working' : 'importPreview.save')}</button>
+          </div>
+        </section>}
+      </dialog>
     </div>
   );
 };

@@ -90,6 +90,11 @@
   .bridge-range input { @apply min-w-0 flex-1 accent-studio-accent; }
   .bridge-feedback { @apply flex items-center gap-2 rounded-lg bg-studio-bg/75 px-4 py-3 text-sm text-studio-textMuted; }
   .bridge-error { @apply text-sm text-red-300; }
+  .bridge-import-dialog { @apply m-auto max-h-[90vh] w-[min(850px,94vw)] overflow-y-auto rounded-2xl bg-studio-surface text-studio-text; }
+  .bridge-import-dialog::backdrop { background: rgb(0 0 0 / 75%); }
+  .bridge-import-image { @apply overflow-hidden rounded-lg border bg-studio-bg; }
+  .bridge-import-image img { @apply h-52 w-full object-contain sm:h-64; }
+  .bridge-import-image figcaption { @apply flex flex-wrap items-center justify-between gap-2 border-t p-3 text-sm text-studio-textMuted; }
   .bridge-footer { @apply flex flex-wrap items-center justify-between gap-2; }
   .bridge-footer:empty { display: none; }
   .bridge-setting { @apply flex items-center justify-between gap-4; }

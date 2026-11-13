@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronRight, Settings, Sparkles } from 'lucide-react';
 import { LanguageSelector } from '../components/LanguageSelector';
+import { AppCacheSettings } from '../components/AppCacheSettings';
 import { useI18n } from '../i18n/i18nContext';
 
 const cloudinaryConsole = 'https://console.cloudinary.com/';
@@ -50,6 +51,7 @@ export function WorkspaceSettings({ expertMode, onModeChange, onAdvanced }: {
       <section className="bridge-card">
         <div className="bridge-setting"><h2>{t('workspace.language')}</h2><LanguageSelector /></div>
       </section>
+      {api && <AppCacheSettings api={api} />}
       <section className="bridge-card">
         <div><h2 className="flex items-center gap-2"><Sparkles size={18} />{t('cloudUpscale.title')}</h2><p className="bridge-muted mt-2">{t('cloudUpscale.setupHint')}</p></div>
         {!api ? <p className="bridge-muted">{t('cloudUpscale.desktop')}</p> : <>

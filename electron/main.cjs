@@ -17,6 +17,9 @@ app.setPath('userData', legacyUserDataPath);
 let mainWindow = null;
 let geminiWindow = null;
 let geminiDownloadListenerInstalled = false;
+const activeBridgeDownloads = new Set();
+let bridgeFileWrites = 0;
+let cacheCleanupRunning = false;
 let db = null;
 let dbPath = '';
 let activeComfyProcess = null;
@@ -235,8 +238,13 @@ function createWindow() {
   });
 }
 
+const geminiPartition = 'persist:interior-ai-gemini';
+const bridgeSourceFolder = 'GeminiBridgeSources';
+const bridgeDownloadFolder = 'GeminiBridgeDownloads';
+const bridgeTransferFolder = 'Visual AI transfers';
+
 function getGeminiDownloadRoot() {
-  const dir = path.join(app.getPath('userData'), 'InteriorAIStudio', 'GeminiBridgeDownloads');
+  const dir = path.join(getStoragePath(), bridgeDownloadFolder);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -273,18 +281,24 @@ async function openGeminiBridgeWindow() {
     return true;
   }
 
-  const geminiSession = session.fromPartition('persist:interior-ai-gemini');
-  if (!geminiDownloadListenerInstalled) geminiSession.on('will-download', (_event, item) => {
+  const geminiSession = session.fromPartition(geminiPartition);
+  if (!geminiDownloadListenerInstalled) geminiSession.on('will-download', (event, item) => {
     const originalName = path.basename(item.getFilename() || `gemini-image-${Date.now()}`);
     const mimeExtensions = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
     const originalExtension = path.extname(originalName).toLowerCase();
     const detectedExtension = mimeExtensions[item.getMimeType()] || (/^\.(png|jpe?g|webp)$/.test(originalExtension) ? originalExtension : '');
     if (!detectedExtension) return;
+    if (cacheCleanupRunning) {
+      event.preventDefault();
+      return;
+    }
     const baseName = path.basename(originalName, path.extname(originalName)).replace(/[^a-zA-Z0-9_-]/g, '_').slice(-100) || `gemini-image-${Date.now()}`;
     const safeName = `${baseName}${detectedExtension}`;
     const downloadPath = path.join(getGeminiDownloadRoot(), `${Date.now()}-${crypto.randomUUID()}-${safeName}`);
     item.setSavePath(downloadPath);
+    activeBridgeDownloads.add(item);
     item.once('done', (_downloadEvent, state) => {
+      activeBridgeDownloads.delete(item);
       if (state !== 'completed' || !/\.(png|jpe?g|webp)$/i.test(downloadPath)) return;
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('gemini:downloaded', {
@@ -305,7 +319,7 @@ async function openGeminiBridgeWindow() {
     title: 'Gemini — AI Designer by V1PERCOREJZ',
     backgroundColor: '#ffffff',
     webPreferences: {
-      partition: 'persist:interior-ai-gemini',
+      partition: geminiPartition,
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -324,6 +338,59 @@ async function openGeminiBridgeWindow() {
     throw error;
   }
   return true;
+}
+
+const normalizedPath = (value) => process.platform === 'win32' ? path.normalize(value).toLowerCase() : path.normalize(value);
+
+async function listBridgeCacheFiles() {
+  const profile = await fs.promises.realpath(app.getPath('userData'));
+  const temp = await fs.promises.realpath(app.getPath('temp'));
+  const roots = [
+    path.join(profile, 'InteriorAIStudio', bridgeSourceFolder),
+    path.join(profile, 'InteriorAIStudio', bridgeDownloadFolder),
+    path.join(temp, bridgeTransferFolder),
+  ];
+  const entries = [];
+  let inaccessible = 0;
+  const protectedPaths = new Set(db.exec(
+    `SELECT output_image_path FROM generations WHERE COALESCE(output_image_base64, '') = ''
+     UNION SELECT source_image_path FROM generations WHERE COALESCE(source_image_base64, '') = ''
+     UNION SELECT source_image_path FROM projects WHERE COALESCE(source_image_base64, '') = ''`
+  ).flatMap((result) => result.values.map(([file]) => typeof file === 'string' ? normalizedPath(file) : '')));
+
+  async function visit(folder, transfer, packageFolder = false) {
+    let contents;
+    try {
+      const real = await fs.promises.realpath(folder);
+      if (normalizedPath(real) !== normalizedPath(folder)) { inaccessible++; return; }
+      contents = await fs.promises.readdir(folder, { withFileTypes: true });
+    } catch (error) {
+      if (error.code !== 'ENOENT') inaccessible++;
+      return;
+    }
+    for (const entry of contents) {
+      const file = path.join(folder, entry.name);
+      if (entry.isDirectory() && transfer && !packageFolder && /^render-[a-z\d]+$/i.test(entry.name)) {
+        await visit(file, true, true);
+        entries.push({ file, directory: true, bytes: 0 });
+      } else if (entry.isFile() && (!transfer || packageFolder) &&
+          (geminiImageExtensions.has(path.extname(entry.name).toLowerCase()) || (packageFolder && entry.name === 'request.txt')) &&
+          !protectedPaths.has(normalizedPath(file))) {
+        try {
+          const stat = await fs.promises.lstat(file);
+          if (stat.isFile()) entries.push({ file, bytes: stat.size });
+        } catch (error) {
+          if (error.code !== 'ENOENT') inaccessible++;
+        }
+      }
+    }
+  }
+  for (const [index, root] of roots.entries()) await visit(root, index === 2);
+  return { entries, inaccessible };
+}
+
+function cacheSessions() {
+  return [session.defaultSession, session.fromPartition(geminiPartition)];
 }
 
 // ---------------- Secure Storage (Windows DPAPI) ----------------
@@ -365,6 +432,52 @@ function decryptData(ciphertext) {
 // ---------------- IPC Setup ----------------
 function setupIPC() {
   const rendererSecureKeys = new Set(['gemini_api_key', 'krea_api_key', 'google_oauth_client_id', 'google_oauth_client_secret', 'local_user_profile']);
+  ipcMain.handle('cache:inspect', async () => {
+    const { entries, inaccessible } = await listBridgeCacheFiles();
+    const sizes = await Promise.allSettled(cacheSessions().map((item) => item.getCacheSize()));
+    return {
+      temporaryBytes: entries.reduce((total, item) => total + item.bytes, 0),
+      browserBytes: sizes.reduce((total, item) => total + (item.status === 'fulfilled' ? item.value : 0), 0),
+      incomplete: inaccessible > 0 || sizes.some((item) => item.status === 'rejected'),
+    };
+  });
+
+  ipcMain.handle('cache:clear', async () => {
+    if (cacheCleanupRunning || bridgeFileWrites || activeBridgeDownloads.size) {
+      return { status: 'busy', removedBytes: 0 };
+    }
+    cacheCleanupRunning = true;
+    let removedBytes = 0;
+    let partial = false;
+    try {
+      const { entries, inaccessible } = await listBridgeCacheFiles();
+      partial = inaccessible > 0;
+      for (const entry of entries) {
+        try {
+          const real = await fs.promises.realpath(entry.file);
+          if (normalizedPath(real) !== normalizedPath(entry.file)) { partial = true; continue; }
+          if (entry.directory) await fs.promises.rmdir(real);
+          else {
+            await fs.promises.unlink(real);
+            removedBytes += entry.bytes;
+          }
+        } catch (error) {
+          if (error.code !== 'ENOENT') partial = true;
+        }
+      }
+      for (const browserSession of cacheSessions()) {
+        const results = await Promise.allSettled([
+          browserSession.clearData({ dataTypes: ['cache', 'serviceWorkers'] }),
+          browserSession.clearCodeCaches({ urls: [] }),
+          browserSession.clearHostResolverCache(),
+        ]);
+        partial ||= results.some((result) => result.status === 'rejected');
+      }
+      return { status: partial ? 'partial' : 'cleared', removedBytes };
+    } finally {
+      cacheCleanupRunning = false;
+    }
+  });
   const cloudinaryKey = 'cloudinary_upscale_credentials';
   ipcMain.handle('upscale:configured', () => Boolean(readAuthRecord(cloudinaryKey)));
   ipcMain.handle('upscale:configure', (_event, credentials) => {
@@ -506,22 +619,30 @@ function setupIPC() {
       if (!bytes.length || bytes.length > 50 * 1024 * 1024) throw new Error('Invalid bridge image size');
       return { name: name + '.' + validMimes.get(mime), bytes };
     });
-    const root = path.join(app.getPath('temp'), 'Visual AI transfers');
-    await fs.promises.mkdir(root, { recursive: true });
-    const folder = await fs.promises.mkdtemp(path.join(root, 'render-'));
-    for (const asset of assets) await fs.promises.writeFile(path.join(folder, asset.name), asset.bytes, { flag: 'wx' });
-    await fs.promises.writeFile(path.join(folder, 'request.txt'), prompt, { encoding: 'utf8', flag: 'wx' });
-    const error = await shell.openPath(folder);
-    if (error) throw new Error(error);
+    if (cacheCleanupRunning) throw new Error('Cache cleanup is running');
+    bridgeFileWrites++;
+    try {
+      const root = path.join(app.getPath('temp'), bridgeTransferFolder);
+      await fs.promises.mkdir(root, { recursive: true });
+      const folder = await fs.promises.mkdtemp(path.join(root, 'render-'));
+      for (const asset of assets) await fs.promises.writeFile(path.join(folder, asset.name), asset.bytes, { flag: 'wx' });
+      await fs.promises.writeFile(path.join(folder, 'request.txt'), prompt, { encoding: 'utf8', flag: 'wx' });
+      const error = await shell.openPath(folder);
+      if (error) throw new Error(error);
+    } finally {
+      bridgeFileWrites--;
+    }
   });
 
   ipcMain.handle('gemini:saveSourceTemp', async (_event, fileName, base64Data, mimeType = 'image/png') => {
+    if (cacheCleanupRunning) return { success: false, error: 'Cache cleanup is running' };
+    bridgeFileWrites++;
     try {
       const allowed = new Set(['image/png', 'image/jpeg', 'image/webp']);
       if (!allowed.has(mimeType) || typeof base64Data !== 'string' || base64Data.length > 70 * 1024 * 1024) throw new Error('Недопустимый формат или размер исходного изображения.');
       const ext = mimeType === 'image/jpeg' ? '.jpg' : mimeType === 'image/webp' ? '.webp' : '.png';
       const safeName = path.basename(String(fileName || 'archicad_reference')).replace(/[^\w.-]/g, '_').replace(/\.[^.]+$/, '');
-      const root = path.join(app.getPath('userData'), 'InteriorAIStudio', 'GeminiBridgeSources');
+      const root = path.join(getStoragePath(), bridgeSourceFolder);
       await fs.promises.mkdir(root, { recursive: true });
       const filePath = path.join(root, `${safeName || 'archicad_reference'}-${Date.now()}${ext}`);
       const buffer = Buffer.from(base64Data.replace(/^data:image\/[\w+.-]+;base64,/, ''), 'base64');
@@ -530,6 +651,8 @@ function setupIPC() {
       return { success: true, filePath };
     } catch (error) {
       return { success: false, error: error.message || 'Не удалось подготовить исходный файл.' };
+    } finally {
+      bridgeFileWrites--;
     }
   });
 

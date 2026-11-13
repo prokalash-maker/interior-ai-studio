@@ -31,6 +31,8 @@ export interface ElectronAPI {
   readRecentGeminiImage: (mode: 'browser' | 'embedded', since: number, filePath: string) => Promise<{ fileName: string; mimeType: string; base64: string } | null>;
   readGeminiClipboardImage: () => Promise<string | null>;
   prepareBridgeFiles: (files: import('../services/bridgeFiles').BridgeAsset[], prompt: string) => Promise<void>;
+  inspectAppCache: () => Promise<{ temporaryBytes: number; browserBytes: number; incomplete: boolean }>;
+  clearAppCache: () => Promise<{ status: 'busy' | 'partial' | 'cleared'; removedBytes: number }>;
   isCloudUpscaleConfigured: () => Promise<boolean>;
   configureCloudUpscale: (credentials: { cloud: string; key: string; secret: string } | null) => Promise<boolean>;
   runCloudUpscale: (base64: string, mime: string) => Promise<{ base64?: string; error?: string; cleanupFailed?: boolean }>;
