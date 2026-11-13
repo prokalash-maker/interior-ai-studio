@@ -7,7 +7,7 @@ import { GenerationRecord, Project } from '../types/project';
 import { dbService } from '../services/db';
 import { StorageService } from '../services/storageService';
 import { useI18n } from '../i18n/i18nContext';
-import { CloudUpscalePanel } from '../components/CloudUpscalePanel';
+import { CloudUpscaleDialog } from '../components/CloudUpscalePanel';
 import { ImageComparisonSlider } from '../components/ImageComparisonSlider';
 
 export const HistoryView: React.FC<{ expertMode: boolean; onSettings: () => void }> = ({ expertMode, onSettings }) => {
@@ -262,18 +262,13 @@ export const HistoryView: React.FC<{ expertMode: boolean; onSettings: () => void
         </div>
       </div>}
 
-      {upscalingRecord?.outputImageBase64 && <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-        <section className="bridge-card w-full max-w-2xl max-h-[90vh] overflow-y-auto" role="dialog" aria-modal="true" aria-label={t('cloudUpscale.title')}>
-          <button className="bridge-button self-end" onClick={() => setUpscalingRecord(null)}>{t('action.close')}</button>
-          <CloudUpscalePanel onSettings={onSettings} result={{
-            imageBase64: upscalingRecord.outputImageBase64,
-            mimeType: upscalingRecord.outputImageBase64.match(/^data:(image\/[\w.+-]+);base64,/)?.[1] || 'image/png',
-            width: upscalingRecord.width,
-            height: upscalingRecord.height,
-            timestamp: upscalingRecord.createdAt,
-          }} />
-        </section>
-      </div>}
+      {upscalingRecord?.outputImageBase64 && <CloudUpscaleDialog onSettings={onSettings} onClose={() => setUpscalingRecord(null)} result={{
+        imageBase64: upscalingRecord.outputImageBase64,
+        mimeType: upscalingRecord.outputImageBase64.match(/^data:(image\/[\w.+-]+);base64,/)?.[1] || 'image/png',
+        width: upscalingRecord.width,
+        height: upscalingRecord.height,
+        timestamp: upscalingRecord.createdAt,
+      }} />}
     </div>
   );
 };

@@ -3,8 +3,10 @@ import { Download, Sparkles } from 'lucide-react';
 import { useI18n } from '../i18n/i18nContext';
 import { GenerationResult } from '../types/ai';
 
+type UpscaleImage = Pick<GenerationResult, 'imageBase64' | 'mimeType' | 'width' | 'height' | 'timestamp'>;
+
 export function CloudUpscalePanel({ result, onSettings }: {
-  result: Pick<GenerationResult, 'imageBase64' | 'mimeType' | 'width' | 'height' | 'timestamp'>;
+  result: UpscaleImage;
   onSettings: () => void;
 }) {
   const { t } = useI18n();
@@ -76,4 +78,25 @@ export function CloudUpscalePanel({ result, onSettings }: {
       {output.cleanupFailed && <p className="bridge-error" role="status">{t('cloudUpscale.cleanupFailed')}</p>}
     </>}
   </section>;
+}
+
+export function CloudUpscaleDialog({ result, onSettings, onClose }: {
+  result: UpscaleImage;
+  onSettings: () => void;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [onClose]);
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+    <section className="bridge-card max-h-[90vh] w-full max-w-2xl overflow-y-auto" role="dialog" aria-modal="true" aria-label={t('cloudUpscale.title')}>
+      <button className="bridge-button self-end" autoFocus onClick={onClose}>{t('action.close')}</button>
+      <CloudUpscalePanel result={result} onSettings={onSettings} />
+    </section>
+  </div>;
 }

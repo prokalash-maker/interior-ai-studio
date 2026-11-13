@@ -54,7 +54,7 @@ import { StorageService } from '../services/storageService';
 import { ImageComparisonSlider } from '../components/ImageComparisonSlider';
 import { BudgetWarningModal } from '../components/BudgetWarningModal';
 import { MaterialReferenceModal } from '../components/MaterialReferenceModal';
-import { UpscaleModal } from '../components/UpscaleModal';
+import { CloudUpscaleDialog } from '../components/CloudUpscalePanel';
 import { trainingService } from '../services/trainingService';
 import { useI18n } from '../i18n/i18nContext';
 import { RoomTypeOption, GeometryModeOption, InteriorStyle, LightingOption, AtmosphereOption, MaterialOption } from '../types/project';
@@ -734,26 +734,7 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
     }
   };
 
-  const handleApplyUpscaledImage = async (newBase64: string, newWidth: number, newHeight: number) => {
-    if (latestResult) {
-      const updated: GenerationRecord = {
-        ...latestResult,
-        outputImageBase64: `data:image/png;base64,${newBase64}`,
-        width: newWidth,
-        height: newHeight,
-      };
-      setLatestResult(updated);
-      try {
-        await dbService.saveGeneration(updated);
-      } catch (_) {}
-      if (currentProject) {
-        onUpdateProject({
-          ...currentProject,
-          updatedAt: Date.now(),
-        });
-      }
-    }
-  };
+  const upscaleImage = latestResult?.outputImageBase64 || sourceImage;
 
   const activeProvider = providerRegistry.getProvider(activeProviderId) || geminiProvider;
   const currentCostEstimate = costTracker.getCostEstimate(activeProviderId, activeProvider.currentModel, resolution);
@@ -789,15 +770,15 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
 
 
           <div className="flex items-center space-x-2">
-            {/* AI 4K Upscaler Button - ALWAYS VISIBLE */}
             <button
               type="button"
+              disabled={!upscaleImage}
               onClick={() => setIsUpscaleOpen(true)}
               className="flex items-center space-x-1.5 px-3 py-1 text-xs rounded-lg bg-gradient-to-r from-studio-cyan/25 to-indigo-600/25 hover:from-studio-cyan/35 hover:to-indigo-600/35 text-studio-cyan border border-studio-cyan/40 font-bold shadow-sm shadow-studio-cyan/10 transition-all active:scale-[0.98]"
-              title="Запустить нейросетевой AI Апскейлер 4K (4x-UltraSharp & Micro-PBR Refiner)"
+              title={t('cloudUpscale.title')}
             >
               <Sparkles className="w-3.5 h-3.5 text-studio-cyan" />
-              <span>AI Апскейлер 4K</span>
+              <span>{t('cloudUpscale.title')}</span>
             </button>
 
             <button
@@ -875,10 +856,10 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
                   type="button"
                   onClick={() => setIsUpscaleOpen(true)}
                   className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-studio-cyan/20 hover:bg-studio-cyan/30 text-studio-cyan border border-studio-cyan/40 flex items-center space-x-1.5 transition-all shadow-sm active:scale-[0.98]"
-                  title="Апскейлить исходный рендер до 4K Ultra-HD"
+                  title={t('cloudUpscale.title')}
                 >
                   <Sparkles className="w-3.5 h-3.5 text-studio-cyan" />
-                  <span>Апскейл исходника 4K</span>
+                  <span>{t('cloudUpscale.title')}</span>
                 </button>
               </div>
             </div>
@@ -981,15 +962,14 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
 
                   <div className="h-4 w-px bg-studio-border/60 mx-1" />
 
-                  {/* Upscale 2x / 4x Action Button */}
                   <button
                     type="button"
                     onClick={() => setIsUpscaleOpen(true)}
                     className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-gradient-to-r from-studio-cyan/20 to-indigo-600/20 hover:from-studio-cyan/30 hover:to-indigo-600/30 text-studio-cyan border border-studio-cyan/40 flex items-center space-x-1.5 transition-all shadow-sm active:scale-[0.98]"
-                    title="Увеличить разрешение до 2K / 4K Ultra-HD"
+                    title={t('cloudUpscale.title')}
                   >
                     <Sparkles className="w-3.5 h-3.5 text-studio-cyan" />
-                    <span>Апскейл 2x / 4x</span>
+                    <span>{t('cloudUpscale.title')}</span>
                   </button>
 
                   {/* Add to LoRA Training Dataset Button */}
@@ -1606,29 +1586,6 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
           </div>
 
 
-
-          {/* 2.5 AI 4K UPSCALER QUICK ACCESS */}
-          <div className="p-2.5 rounded-xl bg-gradient-to-r from-studio-cyan/10 via-indigo-600/10 to-transparent border border-studio-cyan/30 flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <div className="p-1.5 rounded-lg bg-studio-cyan/20 text-studio-cyan">
-                <Sparkles className="w-4 h-4" />
-              </div>
-              <div>
-                <div className="flex items-center space-x-1.5">
-                  <span className="text-xs font-bold text-white">AI Апскейлер 4K</span>
-                  <span className="text-[9px] font-mono text-emerald-400 bg-emerald-500/10 px-1 rounded border border-emerald-500/20">4x-UltraSharp</span>
-                </div>
-                <p className="text-[10px] text-zinc-400">Нейросетевое увеличение и PBR-текстуры</p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setIsUpscaleOpen(true)}
-              className="px-2.5 py-1.5 rounded-lg bg-studio-cyan/20 hover:bg-studio-cyan/30 border border-studio-cyan/40 text-studio-cyan hover:text-white text-xs font-semibold shadow-sm transition-all active:scale-[0.98]"
-            >
-              Открыть
-            </button>
-          </div>
 
           {/* 3. ROOM TYPE */}
           <div className="space-y-1.5">
@@ -2900,16 +2857,17 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
         onAddReference={handleAddMaterialReference}
       />
 
-      {/* AI Upscale Modal (2x / 4x Ultra-HD) */}
-      {isUpscaleOpen && (
-        <UpscaleModal
-          isOpen={isUpscaleOpen}
+      {isUpscaleOpen && upscaleImage && (
+        <CloudUpscaleDialog
           onClose={() => setIsUpscaleOpen(false)}
-          imageBase64={latestResult?.outputImageBase64 || sourceImage || ''}
-          sourceWidth={latestResult?.width || imageMeta?.width || 1344}
-          sourceHeight={latestResult?.height || imageMeta?.height || 768}
-          promptUsed={latestResult?.prompt || fullPrompt || ''}
-          onApplyUpscaledImage={handleApplyUpscaledImage}
+          onSettings={onNavigateSettings}
+          result={{
+            imageBase64: upscaleImage,
+            mimeType: upscaleImage.match(/^data:(image\/[\w.+-]+);base64,/)?.[1] || sourceMimeType,
+            width: latestResult?.width || imageMeta?.width || 1344,
+            height: latestResult?.height || imageMeta?.height || 768,
+            timestamp: latestResult?.createdAt || currentProject?.updatedAt || 0,
+          }}
         />
       )}
     </div>

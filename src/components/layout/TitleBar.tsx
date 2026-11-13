@@ -10,7 +10,6 @@ interface TitleBarProps {
   currentProjectName?: string;
   onOpenSettings: () => void;
   onOpenAuth: () => void;
-  onOpenUpscale?: () => void;
 }
 
 export const TitleBar: React.FC<TitleBarProps> = ({
@@ -18,7 +17,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   currentProjectName,
   onOpenSettings,
   onOpenAuth,
-  onOpenUpscale,
 }) => {
   const { t } = useI18n();
   const [authState, setAuthState] = useState<AuthState>(authService.getState());
@@ -177,18 +175,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             </button>
           )}
         </div>}
-
-        {/* Quick Global AI 4K Upscaler Trigger */}
-        {onOpenUpscale && (
-          <button
-            onClick={onOpenUpscale}
-            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-studio-surfaceLight hover:bg-studio-surfaceHover text-studio-text border border-studio-border transition-colors active:scale-[0.98]"
-            title={t('titlebar.upscale')}
-          >
-            <Sparkles className="w-3 h-3 text-studio-cyan" />
-            <span className="max-[1100px]:hidden">{t('titlebar.upscale')}</span>
-          </button>
-        )}
 
         {/* Language Selector Dropdown */}
         <LanguageSelector />

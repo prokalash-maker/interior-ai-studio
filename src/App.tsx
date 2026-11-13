@@ -8,7 +8,6 @@ const SettingsView = lazy(() => import('./views/SettingsView').then((module) => 
 const GeminiBridgeView = lazy(() => import('./views/GeminiBridgeView').then((module) => ({ default: module.GeminiBridgeView })));
 const TrainingStudioView = lazy(() => import('./views/TrainingStudioView').then((module) => ({ default: module.TrainingStudioView })));
 import { AuthModal } from './views/AuthModal';
-const UpscaleModal = lazy(() => import('./components/UpscaleModal').then((module) => ({ default: module.UpscaleModal })));
 import { Project, RoomType } from './types/project';
 import { dbService } from './services/db';
 import { geminiProvider } from './services/ai/GeminiProvider';
@@ -26,7 +25,6 @@ export const App: React.FC = () => {
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState<boolean>(false);
-  const [isGlobalUpscaleOpen, setIsGlobalUpscaleOpen] = useState<boolean>(false);
   const [pendingArchicadFile, setPendingArchicadFile] = useState<string | null>(null);
 
   // New project modal form state
@@ -86,7 +84,6 @@ export const App: React.FC = () => {
     if (!enabled) {
       setAdvancedSettings(false);
       setPendingArchicadFile(null);
-      setIsGlobalUpscaleOpen(false);
     }
   };
 
@@ -123,7 +120,6 @@ export const App: React.FC = () => {
         expertMode={expertMode}
         onOpenSettings={() => setActiveTab('settings')}
         onOpenAuth={() => setIsAuthModalOpen(true)}
-        onOpenUpscale={expertMode ? () => setIsGlobalUpscaleOpen(true) : undefined}
       />
 
       {/* Main App Body */}
@@ -263,18 +259,6 @@ export const App: React.FC = () => {
             </form>
           </div>
         </div>
-      )}
-      {/* Global AI 4K Upscale Modal */}
-      {isGlobalUpscaleOpen && (
-        <Suspense fallback={null}>
-          <UpscaleModal
-            isOpen={isGlobalUpscaleOpen}
-            onClose={() => setIsGlobalUpscaleOpen(false)}
-            imageBase64={currentProject?.sourceImageBase64 || ''}
-            sourceWidth={1344}
-            sourceHeight={768}
-          />
-        </Suspense>
       )}
     </div>
   );
