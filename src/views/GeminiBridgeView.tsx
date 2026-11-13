@@ -1,29 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import {
-  ExternalLink,
-  Copy,
-  Check,
-  FolderOpen,
-  UploadCloud,
-  Sparkles,
-  ArrowRight,
-  ShieldCheck,
-  SlidersHorizontal,
-  Layers,
-  Image as ImageIcon,
-  CheckCircle2,
-  AlertCircle,
-  Download,
-  Eye,
-  RefreshCw,
-  Camera,
-  Sun,
-  Palette,
-  Maximize2,
-  CheckSquare,
-  Square,
-} from 'lucide-react';
-import { Project, ProjectView, ApprovedProjectDesign, ProjectDesignDraft, ProjectDesignVariant, GenerationRecord } from '../types/project';
+import { ArrowLeft, ArrowRight, Check, ChevronDown, Clipboard, Copy, Download, ExternalLink, FolderOpen, ImageIcon, Layers, Plus, Sparkles, UploadCloud } from 'lucide-react';
+import { GeminiDownload } from '../types/electron';
+import { CloudUpscalePanel } from '../components/CloudUpscalePanel';
+import { Project, ProjectView, ApprovedProjectDesign, ProjectDesignDraft, ProjectDesignVariant, GenerationRecord, RoomType } from '../types/project';
 import { GenerationResult } from '../types/ai';
 import { geminiBridgeService } from '../services/ai/GeminiBridgeService';
 import {
@@ -32,9 +11,7 @@ import {
   LIGHTING_OPTIONS,
   ATMOSPHERE_OPTIONS,
   MATERIAL_OPTIONS,
-  GEOMETRY_MODES,
   buildArchitecturalPositivePrompt,
-  PromptBuildParams
 } from '../services/promptBuilder';
 import { dbService } from '../services/db';
 import { useI18n } from '../i18n/i18nContext';
@@ -42,7 +19,8 @@ import { useI18n } from '../i18n/i18nContext';
 interface GeminiBridgeViewProps {
   currentProject: Project | null;
   onUpdateProject?: (project: Project) => void;
-  onNavigateStudio?: () => void;
+  onNewProject: () => void;
+  onNavigateSettings: () => void;
 }
 
 const STYLE_NAMES: Record<string, { ru: string; uk: string; en: string }> = {
@@ -67,6 +45,45 @@ const STYLE_NAMES: Record<string, { ru: string; uk: string; en: string }> = {
   classic: { ru: 'Классический', uk: 'Класичний', en: 'Classic' },
 };
 
+type BridgeStep = 'source' | 'design' | 'gemini' | 'result';
+type DownloadMode = 'browser' | 'embedded';
+
+interface BridgeHandoff {
+  projectId: string;
+  viewId: string;
+  mode: DownloadMode;
+  since: number;
+  prompt: string;
+  parentId?: string;
+  copiedImage: boolean;
+  copiedReference: boolean;
+  copiedPrompt: boolean;
+  design: ProjectDesignDraft;
+}
+
+const handoffKey = 'visual-ai-gemini-handoff';
+const recentImportKey = 'visual-ai-gemini-imported-downloads';
+const steps: BridgeStep[] = ['source', 'design', 'gemini', 'result'];
+const imageAccept = 'image/png,image/jpeg,image/webp';
+const negativeDefaults = 'blur, distorted geometry, warped perspective, duplicate objects, cartoon, low quality';
+
+function readSession<T>(key: string, fallback: T): T {
+  try {
+    return JSON.parse(sessionStorage.getItem(key) || 'null') ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function imageFileFromBase64(base64: string, name: string, mimeType: string): File {
+  const decoded = atob(base64);
+  return new File([Uint8Array.from(decoded, (character) => character.charCodeAt(0))], name, { type: mimeType });
+}
+
+const buttonClass = 'bridge-button';
+const primaryClass = 'bridge-button bridge-primary';
+const controlClass = 'studio-control w-full px-3 py-2.5 text-sm';
+
 const toImageDataUrl = (image: string, mimeType: string): string => {
   if (/^data:image\/[\w.+-]+;base64,/i.test(image)) return image;
   const cleanBase64 = image.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
@@ -77,7 +94,8 @@ const toImageDataUrl = (image: string, mimeType: string): string => {
 export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   currentProject,
   onUpdateProject,
-  onNavigateStudio,
+  onNewProject,
+  onNavigateSettings,
 }) => {
   const { t, language } = useI18n();
   const surfaceFields = [
@@ -97,7 +115,6 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   const [projectViews, setProjectViews] = useState<ProjectView[]>(currentProject?.views || []);
   const [selectedViewId, setSelectedViewId] = useState<string>(currentProject?.views?.[0]?.id || '');
   const [hydratedProjectId, setHydratedProjectId] = useState<string | null>(null);
-  const [draftSaved, setDraftSaved] = useState(false);
   const [viewOverrideText, setViewOverrideText] = useState<string>('');
   const [approvedDesign, setApprovedDesign] = useState<ApprovedProjectDesign | undefined>(currentProject?.approvedDesign);
   const [designVariants, setDesignVariants] = useState<ProjectDesignVariant[]>(currentProject?.designVariants || []);
@@ -111,44 +128,37 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   const [selectedMaterials, setSelectedMaterials] = useState<string[]>(['wood_oak', 'stone_natural']);
   const [surfaceAssignments, setSurfaceAssignments] = useState<NonNullable<ApprovedProjectDesign['surfaceAssignments']>>({});
   const [cameraOptics, setCameraOptics] = useState<string>('tilt_shift_24mm');
-  const [activeParamTab, setActiveParamTab] = useState<'architecture' | 'materials' | 'specs' | 'prompt'>('architecture');
 
-  // Custom User Specifications (Manual input)
-  const [customMaterials, setCustomMaterials] = useState<string>(
-    'фасады — вертикальный шпон натурального дуба, темный керамогранит, матовая сталь'
-  );
-  const [customStyle, setCustomStyle] = useState<string>('современный минимализм с чистыми линиями');
-  const [customLighting, setCustomLighting] = useState<string>('утренний естественный свет из окна, скрытая LED подсветка 3000K, трековые споты');
-  const [customDecor, setCustomDecor] = useState<string>('обеденный стол с обитыми бежевой тканью стульями, дизайнерский подвесной светильник');
-  const [negativePrompt, setNegativePrompt] = useState<string>(
-    'deformed chairs, missing furniture, altered room layout, relocated kitchen island, cartoon, 3d CGI render, wireframe, blurry, distorted geometry, warped perspective, extra furniture, duplicated objects, redesigned kitchen, low quality'
-  );
+  const [customMaterials, setCustomMaterials] = useState('');
+  const [customStyle, setCustomStyle] = useState('');
+  const [customLighting, setCustomLighting] = useState('');
+  const [customDecor, setCustomDecor] = useState('');
+  const [negativePrompt, setNegativePrompt] = useState(negativeDefaults);
+  const [promptOverride, setPromptOverride] = useState<string | null>(null);
 
-  // Generated Prompt state
-  const [generatedPrompt, setGeneratedPrompt] = useState<string>('');
-  const [isPromptCustomized, setIsPromptCustomized] = useState<boolean>(false);
-
-  // Copy feedback state
-  const [copiedPrompt, setCopiedPrompt] = useState<boolean>(false);
-  const [copiedImage, setCopiedImage] = useState<boolean>(false);
-  const [tempFileMessage, setTempFileMessage] = useState<string | null>(null);
+  const [step, setStep] = useState<BridgeStep>('source');
+  const [handoff, setHandoff] = useState(() => readSession<BridgeHandoff | null>(handoffKey, null));
+  const [downloads, setDownloads] = useState<GeminiDownload[]>([]);
+  const [importedPaths, setImportedPaths] = useState(() => readSession<string[]>(recentImportKey, []));
   const [bridgeMessage, setBridgeMessage] = useState<string | null>(null);
-  const [downloadedImage, setDownloadedImage] = useState<{ filePath: string; fileName: string; byteLength: number; targetViewId?: string; targetProjectId?: string } | null>(null);
-
-  // Imported Result state
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [resultLoading, setResultLoading] = useState(false);
   const [importedResult, setImportedResult] = useState<GenerationResult | null>(null);
-  const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [sliderPosition, setSliderPosition] = useState<number>(50);
-
+  const [sliderPosition, setSliderPosition] = useState(50);
+  const [refinementText, setRefinementText] = useState('');
+  const [upscaleOpen, setUpscaleOpen] = useState(false);
+  const [draggingSource, setDraggingSource] = useState(false);
+  const [draggingResult, setDraggingResult] = useState(false);
+  const busyRef = useRef(false);
+  const alive = useRef(false);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceInputRef = useRef<HTMLInputElement>(null);
   const anglesInputRef = useRef<HTMLInputElement>(null);
-  const activeBridgeViewIdRef = useRef<string>(selectedViewId);
-  const activeBridgePromptRef = useRef<string>(generatedPrompt);
-  const bridgeContextInvalidatedRef = useRef(false);
   const viewSelectionRequestRef = useRef(0);
   const currentProjectRef = useRef(currentProject);
-  currentProjectRef.current = currentProject;
 
   const buildDesignDraft = (): ProjectDesignDraft => ({
     styleId,
@@ -168,7 +178,16 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   });
 
   useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+
+  useEffect(() => {
     setSourceImageFailed(false);
+    setSliderPosition(50);
+    setRefinementText('');
+    setUpscaleOpen(false);
+    setPromptOverride(null);
   }, [sourceImage, selectedViewId]);
 
   useEffect(() => {
@@ -185,13 +204,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     setApprovedDesign(currentProject?.approvedDesign);
     setDesignVariants(currentProject?.designVariants || []);
     setImportedResult(null);
-    setDownloadedImage(null);
-    setBridgeMessage(null);
-    setDraftSaved(false);
     setViewOverrideText('');
-    setIsPromptCustomized(false);
-    setGeneratedPrompt('');
-    setActiveParamTab('architecture');
 
     // Each project starts from its own approved design or clean Bridge defaults.
     // Never carry unapproved settings from the previously selected project.
@@ -204,22 +217,24 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     setRoomType(design?.roomType || currentProject?.roomType || 'kitchen');
     setGeometryMode(design?.geometryMode || 'strict');
     setCameraOptics(design?.cameraOptics || 'tilt_shift_24mm');
-    setNegativePrompt(design?.negativePrompt || 'deformed chairs, missing furniture, altered room layout, relocated kitchen island, cartoon, 3d CGI render, wireframe, blurry, distorted geometry, warped perspective, extra furniture, duplicated objects, redesigned kitchen, low quality');
-    setCustomStyle(design?.customStyle || 'современный минимализм с чистыми линиями');
-    setCustomMaterials(design?.customMaterials || 'фасады — вертикальный шпон натурального дуба, темный керамогранит, матовая сталь');
-    setCustomLighting(design?.customLighting || 'утренний естественный свет из окна, скрытая LED подсветка 3000K, трековые споты');
-    setCustomDecor(design?.customDecor || 'обеденный стол с обитыми бежевой тканью стульями, дизайнерский подвесной светильник');
+    setNegativePrompt(design?.negativePrompt ?? negativeDefaults);
+    setCustomStyle(design?.customStyle || '');
+    setCustomMaterials(design?.customMaterials || '');
+    setCustomLighting(design?.customLighting || '');
+    setCustomDecor(design?.customDecor || '');
 
-    const first = views[0];
+    const pending = handoff?.projectId === currentProject?.id ? handoff : null;
+    const first = views.find((view) => view.id === pending?.viewId) || views[0];
+    if (pending && first?.id === pending.viewId) setStep('gemini');
+    else if (first?.resultGenerationId || first?.resultImageBase64) setStep('result');
     if (first) {
       setSelectedViewId(first.id);
-      activeBridgeViewIdRef.current = first.id;
       setViewOverrideText(first.designOverride || '');
       setSourceImage(first.sourceImageBase64);
       setSourceMimeType(first.sourceMimeType || 'image/png');
+      void loadViewResult(first);
     } else {
       setSelectedViewId('');
-      activeBridgeViewIdRef.current = '';
       setSourceImage(currentProject?.sourceImageBase64 || null);
       setSourceMimeType('image/png');
     }
@@ -228,18 +243,21 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
 
   useEffect(() => {
     if (!currentProject || hydratedProjectId !== currentProject.id) return;
-    setDraftSaved(false);
     const timer = window.setTimeout(() => {
       const latestProject = currentProjectRef.current;
-      if (!latestProject || latestProject.id !== currentProject.id) return;
-      const updatedProject: Project = { ...latestProject, designDraft: buildDesignDraft(), updatedAt: Date.now() };
-      void dbService.saveProject(updatedProject).then(() => {
-        if (currentProjectRef.current?.id === updatedProject.id) {
-          setDraftSaved(true);
+      if (!latestProject || latestProject.id !== currentProject.id || busyRef.current) return;
+      const designDraft = buildDesignDraft();
+      const { updatedAt: _timestamp, ...draftFields } = designDraft;
+      const { updatedAt: _previousTimestamp, ...previousFields } = latestProject.designDraft || {};
+      if (JSON.stringify(draftFields) === JSON.stringify(previousFields)) return;
+      const updatedProject = { ...latestProject, designDraft, updatedAt: Date.now() };
+      void dbService.saveProject(updatedProject, true).then(() => {
+        if (alive.current && currentProjectRef.current === latestProject) {
+          currentProjectRef.current = updatedProject;
           onUpdateProject?.(updatedProject);
         }
-      });
-    }, 350);
+      }).catch(() => setErrorMessage(t('bridgeFlow.saveFailed')));
+    }, 250);
     return () => window.clearTimeout(timer);
   }, [
     currentProject?.id,
@@ -260,25 +278,27 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
   ]);
 
   const persistProjectViews = async (views: ProjectView[], design = approvedDesign, variants = designVariants) => {
-    setProjectViews(views);
-    if (!currentProject) return;
-    const storedViews = views.map(({ resultImageBase64: _resultImageBase64, ...view }) => view);
-    const storedDesign = design ? (({ masterImageBase64: _masterImageBase64, ...savedDesign }) => savedDesign)(design) : undefined;
+    const project = currentProjectRef.current;
+    if (!project) return;
+    const storedViews = views.map((view) => view.resultGenerationId ? { ...view, resultImageBase64: undefined } : view);
+    const storedDesign = design?.masterGenerationId ? { ...design, masterImageBase64: undefined } : design;
     const updatedProject: Project = {
-      ...currentProject,
+      ...project,
       views: storedViews,
       approvedDesign: storedDesign,
       designDraft: buildDesignDraft(),
       designVariants: variants,
-      sourceImageBase64: storedViews[0]?.sourceImageBase64 || currentProject.sourceImageBase64,
-      sourceImagePath: storedViews[0]?.sourceImagePath || currentProject.sourceImagePath,
+      sourceImageBase64: storedViews[0] ? toImageDataUrl(storedViews[0].sourceImageBase64, storedViews[0].sourceMimeType) : project.sourceImageBase64,
+      sourceImagePath: storedViews[0] ? storedViews[0].sourceImagePath : project.sourceImagePath,
       updatedAt: Date.now(),
     };
-    await dbService.saveProject(updatedProject);
-    onUpdateProject?.(updatedProject);
+    await dbService.saveProject(updatedProject, true);
+    currentProjectRef.current = updatedProject;
+    setProjectViews(views);
+    if (alive.current) onUpdateProject?.(updatedProject);
   };
 
-  const handleAddAngleFiles = async (files: FileList | null) => {
+  const handleAddAngleFiles = async (files: File[]) => {
     if (!files?.length) return;
     const remaining = Math.max(0, 12 - projectViews.length);
     if (remaining === 0) {
@@ -286,7 +306,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       return;
     }
     const additions: ProjectView[] = [];
-    for (const file of Array.from(files).slice(0, remaining)) {
+    for (const file of files.slice(0, remaining)) {
       try {
         if (!/\.(png|jpe?g|webp)$/i.test(file.name) || file.size > 50 * 1024 * 1024) throw new Error('invalid-image');
         const data = await geminiBridgeService.processImportedFile(file);
@@ -309,20 +329,28 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     const updated = [...projectViews, ...additions];
     await persistProjectViews(updated);
     const firstNewView = additions[0];
+    viewSelectionRequestRef.current++;
     setSelectedViewId(firstNewView.id);
     setViewOverrideText('');
     setSourceImage(firstNewView.sourceImageBase64);
     setSourceMimeType(firstNewView.sourceMimeType);
     setImportedResult(null);
+    setResultLoading(false);
   };
 
   const handleSelectView = async (view: ProjectView) => {
-    const requestId = ++viewSelectionRequestRef.current;
-    setImportedResult(null);
     setSelectedViewId(view.id);
     setViewOverrideText(view.designOverride || '');
     setSourceImage(view.sourceImageBase64);
     setSourceMimeType(view.sourceMimeType || 'image/png');
+    await loadViewResult(view);
+  };
+
+  const loadViewResult = async (view: ProjectView) => {
+    const requestId = ++viewSelectionRequestRef.current;
+    setImportedResult(null);
+    setResultLoading(Boolean(view.resultGenerationId));
+    let promptUsed = '';
     let resultBase64 = view.resultImageBase64;
     let resultMime = view.resultMimeType || 'image/png';
     let resultWidth = view.resultWidth || 1024;
@@ -333,20 +361,22 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
         const match = record.outputImageBase64.match(/^data:(image\/[\w+.-]+);base64,/);
         resultMime = match?.[1] || 'image/png';
         resultBase64 = record.outputImageBase64.replace(/^data:image\/[\w+.-]+;base64,/, '');
+        promptUsed = record.prompt;
         resultWidth = record.width;
         resultHeight = record.height;
       }
     }
-    if (requestId !== viewSelectionRequestRef.current) return;
+    if (requestId !== viewSelectionRequestRef.current || !alive.current) return;
+    setResultLoading(false);
     if (resultBase64) {
       const result = geminiBridgeService.createBridgeGenerationResult({
         imageBase64: resultBase64,
         mimeType: resultMime,
         width: resultWidth,
         height: resultHeight,
-        promptUsed: generatedPrompt,
+        promptUsed,
       });
-      setImportedResult(result);
+      setImportedResult({ ...result, id: view.resultGenerationId || 'gemini_bridge_legacy_' + view.id });
     } else {
       setImportedResult(null);
     }
@@ -365,7 +395,7 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     const decisions = [customStyle, customMaterials, customLighting, customDecor].filter(Boolean).join('\n');
     const design: ApprovedProjectDesign = {
       masterViewId: view.id,
-      masterGenerationId: view.resultGenerationId,
+      masterGenerationId: importedResult.id.startsWith('gemini_bridge_legacy_') ? undefined : importedResult.id,
       masterImageBase64: importedResult.imageBase64,
       masterMimeType: importedResult.mimeType,
       decisions,
@@ -384,8 +414,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       customDecor,
       approvedAt: Date.now(),
     };
-    setApprovedDesign(design);
     await persistProjectViews(projectViews.map((item) => ({ ...item, approved: item.id === view.id })), design);
+    setApprovedDesign(design);
     setBridgeMessage(t('bridge.masterApproved'));
   };
 
@@ -395,7 +425,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       id: `variant-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name: `${t('bridge.designVariant')} ${designVariants.length + 1}`,
       masterViewId: selectedViewId,
-      masterGenerationId: importedResult.id,
+      masterGenerationId: importedResult.id.startsWith('gemini_bridge_legacy_') ? undefined : importedResult.id,
+      masterImageBase64: importedResult.id.startsWith('gemini_bridge_legacy_') ? importedResult.imageBase64 : undefined,
       masterMimeType: importedResult.mimeType,
       decisions: [customStyle, customMaterials, customLighting, customDecor].filter(Boolean).join('\n'),
       styleId, materialIds: [...selectedMaterials], surfaceAssignments: { ...surfaceAssignments },
@@ -403,8 +434,8 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       customStyle, customMaterials, customLighting, customDecor, approvedAt: Date.now(),
     };
     const updated = [...designVariants, variant];
-    setDesignVariants(updated);
     await persistProjectViews(projectViews, approvedDesign, updated);
+    setDesignVariants(updated);
     setBridgeMessage(t('bridge.variantSaved'));
   };
 
@@ -422,18 +453,23 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     setGeometryMode(variant.geometryMode || 'strict');
     setCameraOptics(variant.cameraOptics || 'tilt_shift_24mm');
     setNegativePrompt(variant.negativePrompt || '');
-    setIsPromptCustomized(false);
+    setPromptOverride(null);
     const view = projectViews.find((item) => item.id === variant.masterViewId);
     if (view && view.id !== selectedViewId) await handleSelectView(view);
-    if (variant.masterGenerationId) {
+    if (variant.masterImageBase64) {
+      setImportedResult(geminiBridgeService.createBridgeGenerationResult({
+        imageBase64: variant.masterImageBase64, mimeType: variant.masterMimeType,
+        width: view?.resultWidth || 1024, height: view?.resultHeight || 768, promptUsed: '',
+      }));
+    } else if (variant.masterGenerationId) {
       const record = await dbService.getGenerationById(variant.masterGenerationId);
       const match = record?.outputImageBase64?.match(/^data:(image\/[\w+.-]+);base64,/);
       if (record?.outputImageBase64) {
-        setImportedResult(geminiBridgeService.createBridgeGenerationResult({
+        setImportedResult({ ...geminiBridgeService.createBridgeGenerationResult({
           imageBase64: record.outputImageBase64.replace(/^data:image\/[\w+.-]+;base64,/, ''),
           mimeType: match?.[1] || variant.masterMimeType,
           width: record.width, height: record.height, promptUsed: record.prompt,
-        }));
+        }), id: record.id });
       }
     }
     setBridgeMessage(t('bridge.variantRestored', { name: variant.name }));
@@ -452,51 +488,13 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
       }
     }
     if (!image) {
-      setBridgeMessage(t('bridge.masterCopyFailed'));
-      return;
+      throw new Error(t('bridge.masterCopyFailed'));
     }
     const copied = await geminiBridgeService.copyImageToClipboard(image, mimeType);
-    setBridgeMessage(copied ? t('bridge.masterCopied') : t('bridge.masterCopyFailed'));
+    if (!copied) throw new Error(t('bridge.masterCopyFailed'));
+    updateHandoffFlags({ copiedReference: true });
+    setBridgeMessage(t('bridge.masterCopied'));
   };
-
-  useEffect(() => {
-    if (!window.electronAPI?.onGeminiImageDownloaded) return;
-    const savedViewId = sessionStorage.getItem('geminiBridgePendingViewId');
-    const savedPrompt = sessionStorage.getItem('geminiBridgePendingPrompt');
-    const savedProjectId = sessionStorage.getItem('geminiBridgePendingProjectId');
-    const openedAt = Number(sessionStorage.getItem('geminiBridgeOpenedAt') || 0);
-    const pendingProjectMatches = !savedProjectId || savedProjectId === currentProject?.id;
-    const targetViewExists = pendingProjectMatches && projectViews.some((view) => view.id === savedViewId);
-    activeBridgeViewIdRef.current = targetViewExists && savedViewId ? savedViewId : selectedViewId;
-    if (pendingProjectMatches && savedPrompt) activeBridgePromptRef.current = savedPrompt;
-    if (!pendingProjectMatches) {
-      bridgeContextInvalidatedRef.current = true;
-      setDownloadedImage(null);
-      setBridgeMessage(t('bridge.downloadWrongProject'));
-      sessionStorage.removeItem('geminiBridgePendingViewId');
-      sessionStorage.removeItem('geminiBridgePendingPrompt');
-      sessionStorage.removeItem('geminiBridgePendingProjectId');
-      sessionStorage.removeItem('geminiBridgeOpenedAt');
-    }
-    const unsubscribe = window.electronAPI.onGeminiImageDownloaded((event) => {
-      if (bridgeContextInvalidatedRef.current) return;
-      const targetViewId = projectViews.some((view) => view.id === activeBridgeViewIdRef.current) ? activeBridgeViewIdRef.current : selectedViewId;
-      setDownloadedImage({ ...event, targetViewId, targetProjectId: currentProject?.id });
-      setBridgeMessage(event.byteLength > 50 * 1024 * 1024 ? t('bridge.downloadTooLarge') : t('bridge.downloadDetected'));
-    });
-    void window.electronAPI.listGeminiDownloads().then((result) => {
-      if (!result.success || !result.files.length) return;
-      const pendingDownload = result.files.find((file) => file.modifiedAt >= openedAt);
-      if (pendingDownload && openedAt > 0) {
-        const targetViewId = targetViewExists && savedViewId ? savedViewId : selectedViewId;
-        if (pendingProjectMatches && !bridgeContextInvalidatedRef.current) {
-          setDownloadedImage((current) => current || { ...pendingDownload, targetViewId, targetProjectId: currentProject?.id });
-        }
-        if (pendingDownload.byteLength > 50 * 1024 * 1024) setBridgeMessage(t('bridge.downloadTooLarge'));
-      }
-    }).catch(() => {});
-    return unsubscribe;
-  }, [t, selectedViewId, currentProject?.id, projectViews]);
 
   const toggleMaterial = (mId: string) => {
     if (selectedMaterials.includes(mId)) {
@@ -504,1131 +502,418 @@ export const GeminiBridgeView: React.FC<GeminiBridgeViewProps> = ({
     } else {
       setSelectedMaterials([...selectedMaterials, mId]);
     }
-    setIsPromptCustomized(false);
+    setPromptOverride(null);
   };
 
   const setSurfaceMaterial = (surface: keyof NonNullable<ApprovedProjectDesign['surfaceAssignments']>, materialId: string) => {
     setSurfaceAssignments((current) => ({ ...current, [surface]: materialId || undefined }));
     if (materialId && !selectedMaterials.includes(materialId)) setSelectedMaterials((current) => [...current, materialId]);
-    setIsPromptCustomized(false);
+    setPromptOverride(null);
   };
 
-  // Recalculate prompt when configuration changes
+  const view = projectViews.find((item) => item.id === selectedViewId);
+  const ready = Boolean(view && sourceImage && !sourceImageFailed);
+  const reference = Boolean(approvedDesign && approvedDesign.masterViewId !== view?.id);
+  const pending = handoff?.projectId === currentProject?.id && handoff?.viewId === view?.id ? handoff : null;
+  const label = (item: { labelRu: string; labelUk: string; labelEn: string }) =>
+    language === 'ru' ? item.labelRu : language === 'uk' ? item.labelUk : item.labelEn;
+  const style = INTERIOR_STYLES.find((item) => item.id === styleId) || INTERIOR_STYLES[0];
+  const baseline = buildArchitecturalPositivePrompt({
+    roomType: roomType as RoomType, style, geometryMode, lightingId, atmosphereId, selectedMaterials,
+    materialReferences: currentProject?.materialReferences?.map((item) => ({ ...item, imageBase64: undefined })),
+    customStyle, customMaterials, customLighting, customDecor,
+  });
+  const scope = {
+    strict: 'Preserve the exact camera, architecture and furniture placement. Change finishes and lighting only.',
+    balanced: 'Preserve the camera, architecture and furniture layout. Adjust small decor and finishes.',
+    creative: 'Use this room as the basis for a new design concept.',
+  };
+  const assignments = surfaceFields.flatMap(({ id }) => {
+    const material = MATERIAL_OPTIONS.find((item) => item.id === surfaceAssignments[id]);
+    return material ? [id + ': ' + material.promptDescription] : [];
+  });
+  const generatedPrompt = promptOverride ?? [
+    'Generate a photorealistic interior visualization from the first attached image. Return the image.',
+    scope[geometryMode],
+    baseline.slice(baseline.indexOf('Space Type:')).split('Photographic & Rendering Standards:')[0].trim(),
+    assignments.length && 'Use these finishes on their assigned surfaces: ' + assignments.join('; '),
+    'Architectural photography, lens character: ' + ({ tilt_shift_24mm: '24mm tilt-shift', prime_35mm: '35mm prime', '50mm': '50mm' }[cameraOptics] || 'natural'),
+    negativePrompt && 'Avoid: ' + negativePrompt,
+    reference && 'Use the second attached image as the approved material and lighting reference. Follow the composition of the first image.',
+    view?.designOverride && 'For this view: ' + view.designOverride,
+  ].filter(Boolean).join('\n\n');
+
+  function setPending(value: BridgeHandoff | null) {
+    setHandoff(value);
+    if (value) sessionStorage.setItem(handoffKey, JSON.stringify(value));
+    else sessionStorage.removeItem(handoffKey);
+  }
+
+  function updateHandoffFlags(flags: Partial<Pick<BridgeHandoff, 'copiedImage' | 'copiedReference' | 'copiedPrompt'>>) {
+    if (pending) setPending({ ...pending, ...flags });
+  }
+
   useEffect(() => {
-    if (!isPromptCustomized) {
-      const selectedStyle = INTERIOR_STYLES.find((s) => s.id === styleId) || INTERIOR_STYLES[0];
-      const params: PromptBuildParams = {
-        roomType: roomType as any,
-        style: selectedStyle,
-        geometryMode: geometryMode,
-        lightingId,
-        atmosphereId,
-        selectedMaterials,
-        materialReferences: currentProject?.materialReferences || [],
-        customMaterials,
-        customStyle,
-        customLighting,
-        customDecor,
-      };
-
-      const basePrompt = buildArchitecturalPositivePrompt(params);
-      const surfaceLabels: Record<string, string> = {
-        floor: 'Floor', walls: 'Walls', cabinetry: 'Cabinet fronts', countertop: 'Countertops', furniture: 'Furniture', textile: 'Textiles',
-      };
-      const surfaceMap = Object.entries(surfaceAssignments)
-        .filter(([, materialId]) => Boolean(materialId))
-        .map(([surface, materialId]) => `${surfaceLabels[surface]} = ${MATERIAL_OPTIONS.find((material) => material.id === materialId)?.promptDescription || materialId}`)
-        .join('; ');
-
-      const cameraText = cameraOptics === 'tilt_shift_24mm'
-        ? 'Shot on Hasselblad H6D-100c with 24mm f/3.5 tilt-shift architectural lens, perfectly vertical lines, zero optical distortion.'
-        : cameraOptics === 'prime_35mm'
-        ? 'Shot on Leica SL2 with Summicron 35mm f/2 ASPH architectural prime, natural human eye perspective.'
-        : 'Shot on 50mm architectural lens, cinematic eye-level framing.';
-
-      const geometryInstruction = geometryMode === 'strict'
-        ? 'CRITICAL ARCHITECTURAL DIRECTIVE: The uploaded image is an exact 3D clay model from Archicad. You MUST PRESERVE 100% of the room geometry: the exact location, dimensions, and arrangement of all kitchen cabinetry, countertops, dining table, chairs, windows, and structural walls. DO NOT change furniture placement, do not invent new objects, and do not rotate the camera viewpoint. Your only role is to apply ultra-photorealistic PBR materials, natural daylight, soft contact shadows, and tactile reflections.'
-        : geometryMode === 'balanced'
-        ? 'ARCHITECTURAL DIRECTIVE: Maintain the core Archicad layout, kitchen cabinetry, and dining setup strictly aligned with the source render, while infusing luxurious designer textures and atmospheric lighting.'
-        : 'CREATIVE DIRECTIVE: Use the source image as an architectural inspiration with stylish modern enhancements.';
-
-      const masterInstruction = approvedDesign && selectedViewId !== approvedDesign.masterViewId
-        ? `\n\nThe second attached image is the approved visual reference for this project. Match its overall material character, color palette, lighting mood and decor language where they agree with the current project specification. The current prompt and its locked surface-material map are the source of truth if any detail conflicts with the reference. Apply the same room design to the CURRENT clay view while preserving this view's own camera, perspective, architecture, furniture placement and object proportions. Do not copy the reference image's camera or composition.`
-        : '';
-      const viewOverride = projectViews.find((view) => view.id === selectedViewId)?.designOverride;
-      const surfaceMapInstruction = surfaceMap ? `\n\nLOCKED SURFACE MATERIAL MAP (keep these assignments identical across all camera views): ${surfaceMap}. Do not swap materials between surfaces.` : '';
-      const fullPrompt = `${geometryInstruction}\n\n${basePrompt}${surfaceMapInstruction}\n\nCamera Optics: ${cameraText}\n\nNegative Constraints: ${negativePrompt}${masterInstruction}${viewOverride ? `\n\nVIEW-SPECIFIC EXCEPTION: ${viewOverride}` : ''}`;
-
-      setGeneratedPrompt(fullPrompt);
-    }
-  }, [
-    roomType,
-    styleId,
-    geometryMode,
-    lightingId,
-    atmosphereId,
-    selectedMaterials,
-    surfaceAssignments,
-    cameraOptics,
-    negativePrompt,
-    customMaterials,
-    customStyle,
-    customLighting,
-    customDecor,
-    isPromptCustomized,
-    currentProject,
-    approvedDesign,
-    selectedViewId,
-    projectViews,
-  ]);
-
-  // Keep source in sync with current project if available
-  useEffect(() => {
-    if (currentProject?.sourceImageBase64 && !sourceImage) {
-      setSourceImage(currentProject.sourceImageBase64);
-      setSourceMimeType('image/png');
-    }
-  }, [currentProject]);
-
-  const handleCopyPrompt = async () => {
-    const success = await geminiBridgeService.copyText(generatedPrompt);
-    if (success) {
-      setCopiedPrompt(true);
-      setTimeout(() => setCopiedPrompt(false), 2500);
-    }
-  };
-
-  const handleCopyImage = async () => {
-    if (!sourceImage) return;
-    const success = await geminiBridgeService.copyImageToClipboard(sourceImage, sourceMimeType);
-    if (success) {
-      setCopiedImage(true);
-      setTimeout(() => setCopiedImage(false), 2500);
-    } else {
-      // Fallback: prepare file and reveal
-      handleOpenTempFile();
-    }
-  };
-
-  const handleOpenTempFile = async () => {
-    if (!sourceImage) return;
-    setTempFileMessage(t('bridge.tempPreparing'));
-    const ok = await geminiBridgeService.prepareTempFileAndReveal(
-      sourceImage,
-      `archicad_reference_${Date.now()}.png`,
-      sourceMimeType
-    );
-    if (ok) {
-      setTempFileMessage(t('bridge.tempReady'));
-      setTimeout(() => setTempFileMessage(null), 5000);
-    }
-  };
-
-  const handleOpenGemini = async () => {
-    bridgeContextInvalidatedRef.current = false;
-    activeBridgeViewIdRef.current = selectedViewId;
-    activeBridgePromptRef.current = generatedPrompt;
-    sessionStorage.setItem('geminiBridgePendingViewId', selectedViewId);
-    sessionStorage.setItem('geminiBridgePendingProjectId', currentProject?.id || '');
-    sessionStorage.setItem('geminiBridgePendingPrompt', generatedPrompt);
-    sessionStorage.setItem('geminiBridgeOpenedAt', String(Date.now()));
-    setBridgeMessage(t('bridge.opening'));
-    const opened = await geminiBridgeService.openGeminiWeb();
-    setBridgeMessage(opened ? t('bridge.windowReady') : t('bridge.openFailed'));
-  };
-
-  const handleOpenGeminiExternal = async () => {
-    bridgeContextInvalidatedRef.current = false;
-    activeBridgeViewIdRef.current = selectedViewId;
-    activeBridgePromptRef.current = generatedPrompt;
-    sessionStorage.setItem('geminiBridgePendingViewId', selectedViewId);
-    sessionStorage.setItem('geminiBridgePendingProjectId', currentProject?.id || '');
-    sessionStorage.setItem('geminiBridgePendingPrompt', generatedPrompt);
-    sessionStorage.setItem('geminiBridgeOpenedAt', String(Date.now()));
-    setBridgeMessage(t('bridge.opening'));
-    const opened = await geminiBridgeService.openGeminiExternal();
-    setBridgeMessage(opened ? t('bridge.externalReady') : t('bridge.openFailed'));
-  };
-
-  const handleImportDownloaded = async () => {
-    if (!downloadedImage || !window.electronAPI?.readGeminiDownloadedImage) return;
-    if (downloadedImage.targetProjectId && downloadedImage.targetProjectId !== currentProject?.id) {
-      setDownloadedImage(null);
-      setBridgeMessage(t('bridge.downloadWrongProject'));
+    const api = window.electronAPI;
+    if (!api || !pending) {
+      setDownloads([]);
       return;
     }
-    if (downloadedImage.byteLength > 50 * 1024 * 1024) {
-      setBridgeMessage(t('bridge.downloadTooLarge'));
-      return;
-    }
-    const result = await window.electronAPI.readGeminiDownloadedImage(downloadedImage.filePath);
-    if (!result.success || !result.base64 || !result.mimeType) {
-      setBridgeMessage(result.error || t('bridge.importFailed'));
-      return;
-    }
-    const bytes = Uint8Array.from(atob(result.base64), (char) => char.charCodeAt(0));
-    const file = new File([bytes], result.fileName || downloadedImage.fileName, { type: result.mimeType });
-    const imported = await processImportedFile(file, result.filePath, downloadedImage.targetViewId || selectedViewId, activeBridgePromptRef.current);
-    if (imported) {
-      setDownloadedImage(null);
-      sessionStorage.removeItem('geminiBridgePendingViewId');
-      sessionStorage.removeItem('geminiBridgePendingPrompt');
-      sessionStorage.removeItem('geminiBridgePendingProjectId');
-      sessionStorage.removeItem('geminiBridgeOpenedAt');
-      setBridgeMessage(t('bridge.imported'));
-    } else {
-      setBridgeMessage(t('bridge.importFailed'));
-    }
-  };
-
-  const handleFileDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      processImportedFile(e.dataTransfer.files[0]);
-    }
-  };
-
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      processImportedFile(e.target.files[0]);
-    }
-  };
-
-  const handleSourceUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
-      if (!/\.(png|jpe?g|webp)$/i.test(file.name) || file.size > 50 * 1024 * 1024) {
-        setBridgeMessage(t('bridge.invalidImageFile'));
-        e.target.value = '';
-        return;
+    let stopped = false;
+    let checking = false;
+    const refresh = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const items = await api.listRecentGeminiImages(pending.mode, pending.since);
+        if (!stopped) setDownloads(items.filter((item) => !importedPaths.includes(item.filePath)));
+      } catch {
+        // Manual import is available when the download folder is unavailable.
+      } finally {
+        checking = false;
       }
-      const fileData = await geminiBridgeService.processImportedFile(file);
-      const now = Date.now();
-      const active = projectViews.find((view) => view.id === selectedViewId);
-      const nextView: ProjectView = {
-        id: active?.id || `view-${now}`,
-        name: active?.name || file.name.replace(/\.[^.]+$/, ''),
-        sourceImagePath: (file as File & { path?: string }).path,
-        sourceImageBase64: fileData.imageBase64,
-        sourceMimeType: fileData.mimeType,
-        approved: active?.approved || false,
-        createdAt: active?.createdAt || now,
-        updatedAt: now,
-      };
-      const updated = active ? projectViews.map((view) => view.id === active.id ? nextView : view) : [...projectViews, nextView];
-      setSelectedViewId(nextView.id);
-      setViewOverrideText(nextView.designOverride || '');
-      setSourceImage(fileData.imageBase64);
-      setSourceMimeType(fileData.mimeType);
-      await persistProjectViews(updated);
-      setImportedResult(null);
-    }
-    e.target.value = '';
-  };
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, 2500);
+    window.addEventListener('focus', refresh);
+    const unsubscribe = api.onGeminiImageDownloaded(refresh);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      unsubscribe();
+    };
+  }, [pending?.mode, pending?.since, importedPaths]);
 
-  const processImportedFile = async (file: File, savedPath?: string, targetViewId = selectedViewId, promptUsed = generatedPrompt): Promise<boolean> => {
+  function goTo(next: BridgeStep) {
+    setStep(next);
+    workspaceRef.current?.scrollTo({ top: 0 });
+    requestAnimationFrame(() => headingRef.current?.focus({ preventScroll: true }));
+  }
+
+  async function run(action: () => Promise<void>, failure = t('bridgeFlow.saveFailed')) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setErrorMessage(null);
+    setBridgeMessage(null);
     try {
-      if (file.size > 50 * 1024 * 1024 || !/\.(png|jpe?g|webp)$/i.test(file.name)) throw new Error('invalid-image');
-      const data = await geminiBridgeService.processImportedFile(file);
-      const newResult = geminiBridgeService.createBridgeGenerationResult({
-        imageBase64: data.imageBase64,
-        mimeType: data.mimeType,
-        width: data.width,
-        height: data.height,
-        promptUsed,
-        resolution: Math.max(data.width, data.height) >= 3000 ? '4k' : Math.max(data.width, data.height) >= 1800 ? '2k' : '1k',
-      });
-
-      setImportedResult(newResult);
-
-      // Save generation record to SQLite / local database
-      const targetView = projectViews.find((view) => view.id === targetViewId);
-      const genRecord: GenerationRecord = {
-        id: newResult.id,
-        projectId: currentProject?.id || 'default_project',
-        viewId: targetViewId || undefined,
-        sourceImagePath: targetView?.sourceImagePath || currentProject?.sourceImagePath || 'archicad_reference.png',
-        sourceImageBase64: targetView?.sourceImageBase64 || sourceImage || '',
-        outputImagePath: savedPath || file.name,
-        outputImageBase64: `data:${newResult.mimeType};base64,${newResult.imageBase64}`,
-        prompt: promptUsed,
-        styleId,
-        roomType: roomType as any,
-        geometryMode: 'strict',
-        lighting: lightingId,
-        materials: selectedMaterials,
-        atmosphere: atmosphereId,
-        provider: 'gemini_bridge',
-        model: 'gemini-web-personal',
-        width: newResult.width,
-        height: newResult.height,
-        latencyMs: 0,
-        createdAt: Date.now(),
-        resolution: newResult.resolution,
-        costUsd: 0.0,
-      };
-      await dbService.saveGeneration(genRecord);
-
-      const activeView = targetView;
-      if (activeView) {
-        setSelectedViewId(activeView.id);
-        setSourceImage(activeView.sourceImageBase64);
-        setSourceMimeType(activeView.sourceMimeType || 'image/png');
-        await persistProjectViews(projectViews.map((view) => view.id === activeView.id ? {
-          ...view,
-          resultImageBase64: newResult.imageBase64,
-          resultMimeType: newResult.mimeType,
-          resultWidth: newResult.width,
-          resultHeight: newResult.height,
-          resultGenerationId: newResult.id,
-          updatedAt: Date.now(),
-        } : view));
-      }
-
-      // Update project state if present
-      if (currentProject && onUpdateProject) {
-        onUpdateProject({
-          ...currentProject,
-          updatedAt: Date.now(),
-        });
-      }
-      return true;
-    } catch (err) {
-      console.error('Failed to import Gemini result:', err);
-      setBridgeMessage(t('bridge.invalidImageFile'));
-      return false;
+      await action();
+    } catch (error) {
+      console.error('Gemini Bridge action failed', error);
+      if (alive.current) setErrorMessage(failure);
+    } finally {
+      busyRef.current = false;
+      if (alive.current) setBusy(false);
     }
+  }
+
+  async function uploadSource(file: File) {
+    if (!currentProject) return;
+    const data = await geminiBridgeService.processImportedFile(file).catch(() => null);
+    if (!data) {
+      setErrorMessage(t('bridge.invalidImageFile'));
+      return;
+    }
+    const replace = view && !view.resultGenerationId && !view.resultImageBase64 && !view.approved;
+    if (!replace && projectViews.length >= 12) {
+      setErrorMessage(t('bridge.viewLimitReached'));
+      return;
+    }
+    const now = Date.now();
+    const next: ProjectView = {
+      id: replace ? view.id : 'view-' + crypto.randomUUID(),
+      name: file.name.replace(/\.[^.]+$/, ''), sourceImageBase64: data.imageBase64, sourceMimeType: data.mimeType,
+      approved: false, designOverride: replace ? view.designOverride : undefined, createdAt: replace ? view.createdAt : now, updatedAt: now,
+    };
+    await persistProjectViews(replace ? projectViews.map((item) => item.id === next.id ? next : item) : [...projectViews, next]);
+    if (pending) setPending(null);
+    await handleSelectView(next);
+    goTo('design');
+  }
+
+  async function startGemini(mode: DownloadMode, refine = false) {
+    if (!currentProject || !view || !sourceImage) return;
+    const parent = refine ? importedResult : null;
+    const prompt = parent
+      ? 'Edit this interior visualization. Keep the layout, camera and all unrelated details. Return the revised image.\n\n' + refinementText.trim()
+      : generatedPrompt.trim();
+    const since = Date.now();
+    const opening = mode === 'embedded' ? geminiBridgeService.openGeminiWeb() : geminiBridgeService.openGeminiExternal();
+    const copiedImage = await geminiBridgeService.copyImageToClipboard(parent?.imageBase64 || sourceImage, parent?.mimeType || sourceMimeType);
+    if (!await opening) throw new Error('open-gemini');
+    setDownloads([]);
+    setPending({ projectId: currentProject.id, viewId: view.id, mode, since, prompt, parentId: parent?.id,
+      copiedImage, copiedReference: false, copiedPrompt: false, design: buildDesignDraft() });
+    goTo('gemini');
+    if (copiedImage) setBridgeMessage(t('bridgeFlow.sourceCopied'));
+    else setErrorMessage(t('bridgeFlow.copyImageFailed'));
+  }
+
+  function handoffImage() {
+    if (pending?.parentId && importedResult?.id === pending.parentId) return { image: importedResult.imageBase64, mime: importedResult.mimeType };
+    return { image: sourceImage || '', mime: sourceMimeType };
+  }
+
+  async function importResult(file: File, downloadPath?: string) {
+    if (!currentProject || !view || !ready) return;
+    const data = await geminiBridgeService.processImportedFile(file).catch(() => null);
+    if (!data) {
+      setErrorMessage(t('bridge.invalidImageFile'));
+      return;
+    }
+    const source = toImageDataUrl(view.sourceImageBase64, view.sourceMimeType);
+    if (data.imageBase64 === source.split(',')[1] || data.imageBase64 === importedResult?.imageBase64) {
+      setErrorMessage(t('bridgeFlow.sameSource'));
+      return;
+    }
+    const design = pending?.design || buildDesignDraft();
+    const size = Math.max(data.width, data.height);
+    const result = geminiBridgeService.createBridgeGenerationResult({
+      ...data, promptUsed: pending?.prompt || generatedPrompt, resolution: size >= 3000 ? '4k' : size >= 1800 ? '2k' : '1k',
+    });
+    const record: GenerationRecord = {
+      id: result.id, projectId: currentProject.id, viewId: view.id, parentId: pending?.parentId,
+      sourceImagePath: view.sourceImagePath || view.name, sourceImageBase64: source,
+      outputImagePath: downloadPath || file.name, outputImageBase64: toImageDataUrl(result.imageBase64, result.mimeType),
+      prompt: result.promptUsed, styleId: design.styleId || styleId, roomType: (design.roomType || roomType) as RoomType,
+      geometryMode: design.geometryMode || geometryMode, lighting: design.lightingId, materials: design.materialIds,
+      atmosphere: design.atmosphereId, provider: result.provider, model: result.model, width: result.width, height: result.height,
+      latencyMs: 0, createdAt: result.timestamp, resolution: result.resolution, costUsd: 0,
+    };
+    await dbService.saveGeneration(record, true);
+    await persistProjectViews(projectViews.map((item) => item.id === view.id ? {
+      ...item, resultImageBase64: undefined, resultGenerationId: result.id, resultMimeType: result.mimeType,
+      resultWidth: result.width, resultHeight: result.height, updatedAt: result.timestamp,
+    } : item));
+    if (downloadPath) {
+      const paths = [...importedPaths, downloadPath].slice(-40);
+      setImportedPaths(paths);
+      sessionStorage.setItem(recentImportKey, JSON.stringify(paths));
+    }
+    if (pending) setPending(null);
+    setImportedResult(result);
+    setUpscaleOpen(false);
+    setRefinementText('');
+    setSliderPosition(50);
+    setBridgeMessage(t('bridge.imported'));
+    goTo('result');
+  }
+
+  function downloadResult(result: GenerationResult) {
+    const link = document.createElement('a');
+    link.href = toImageDataUrl(result.imageBase64, result.mimeType);
+    const extension = result.mimeType === 'image/jpeg' ? 'jpg' : result.mimeType === 'image/webp' ? 'webp' : 'png';
+    link.download = 'Gemini-' + result.timestamp + '.' + extension;
+    link.click();
+  }
+
+  const selectFile = (event: React.ChangeEvent<HTMLInputElement>, action: (file: File) => Promise<void>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (file) void run(() => action(file));
   };
+  const dropFile = (event: React.DragEvent, action: (file: File) => Promise<void>) => {
+    event.preventDefault();
+    const file = event.dataTransfer.files[0];
+    if (file) void run(() => action(file));
+  };
+  const select = (name: string, value: string, setter: (value: string) => void, options: { id: string; text: string }[]) => (
+    <label className="bridge-field">{name}<select className={controlClass} value={value} onChange={(event) => {
+      setter(event.target.value);
+      setPromptOverride(null);
+    }}>{options.map((item) => <option key={item.id} value={item.id}>{item.text}</option>)}</select></label>
+  );
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-studio-bg overflow-hidden text-studio-text select-none">
-      {/* 1. Header Banner */}
-      <div className="h-14 border-b border-studio-border bg-studio-surface px-6 flex items-center justify-between shrink-0">
-        <div className="flex items-center space-x-3">
-          <div className="p-1.5 bg-indigo-500/15 border border-indigo-500/30 rounded-lg">
-            <Sparkles className="w-4 h-4 text-indigo-400" />
+    <div ref={workspaceRef} className="bridge-workspace min-w-0 flex-1 overflow-y-auto">
+      <div className="bridge-container">
+        <header className="bridge-header">
+          <div><p className="bridge-eyebrow"><Sparkles size={15} />Gemini Bridge</p><h1>{t('bridgeFlow.title')}</h1><p className="bridge-muted">{t('bridgeFlow.subtitle')}</p></div>
+          {currentProject && <span className="bridge-project"><Layers size={16} /><span>{currentProject.name}</span></span>}
+        </header>
+        <nav aria-label={t('bridgeFlow.steps')} className="bridge-steps">
+          {steps.map((item, index) => <button key={item} aria-current={step === item ? 'step' : undefined}
+            disabled={busy || (item !== 'source' && !ready)} onClick={() => goTo(item)}><span>{index + 1}</span>{t('bridgeFlow.' + item)}</button>)}
+        </nav>
+        <input ref={sourceInputRef} type="file" accept={imageAccept} hidden onChange={(event) => selectFile(event, uploadSource)} />
+        <input ref={fileInputRef} type="file" accept={imageAccept} hidden onChange={(event) => selectFile(event, importResult)} />
+        <input ref={anglesInputRef} type="file" accept={imageAccept} multiple hidden onChange={(event) => {
+          const files = Array.from(event.currentTarget.files || []);
+          if (files?.length) void run(() => handleAddAngleFiles(files));
+          event.currentTarget.value = '';
+        }} />
+        <section className="bridge-card" aria-busy={busy}>
+          <div className="bridge-card-heading">
+            <h2 ref={headingRef} tabIndex={-1}>{t('bridgeFlow.' + step + 'Heading')}</h2>
+            <p className="bridge-muted">{t('bridgeFlow.' + step + 'Hint')}</p>
           </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <h2 className="text-sm font-semibold tracking-wide text-white uppercase">
-                Gemini Bridge
-              </h2>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                {t('bridge.accountLimits')}
-              </span>
-            </div>
-            <p className="text-[11px] text-studio-textSubtle">
-              {t('bridge.tagline')}
-            </p>
-          </div>
-        </div>
-
-        {/* Security & Privacy Badge */}
-        <div className="flex items-center space-x-2 text-[11px] bg-studio-surfaceLight px-3 py-1.5 rounded-lg border border-studio-border/70 text-studio-textMuted">
-          <ShieldCheck className="w-4 h-4 text-emerald-400" />
-          <span>{t('bridge.security')}</span>
-        </div>
-      </div>
-
-      {/* 2. Main 3-Column Handoff Workspace */}
-      <div className="flex-1 grid grid-cols-12 gap-4 p-4 overflow-hidden">
-        {/* LEFT COLUMN: Source Archicad Model & Handoff Actions (3 cols) */}
-        <div className="col-span-3 flex flex-col space-y-3 bg-studio-surface border border-studio-border rounded-xl p-3.5 overflow-y-auto">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-white tracking-wide uppercase">
-              {t('bridge.sourceTitle')} (Archicad)
-            </span>
-            <button
-              onClick={() => sourceInputRef.current?.click()}
-              className="text-[10px] text-indigo-400 hover:text-indigo-300 font-medium"
-            >
-              {t('bridge.replaceFile')}
-            </button>
-            <input
-              type="file"
-              ref={sourceInputRef}
-              onChange={handleSourceUpload}
-              accept="image/png,image/jpeg,image/webp"
-              className="hidden"
-            />
-          </div>
-
-          {/* Source Image Canvas / Box */}
-          <div className="relative aspect-video rounded-lg overflow-hidden bg-studio-bg border border-studio-border flex items-center justify-center group">
-            {sourceImage && !sourceImageFailed ? (
-              <img
-                src={toImageDataUrl(sourceImage, sourceMimeType)}
-                alt={t('bridge.sourceImageAlt')}
-                className="w-full h-full object-contain"
-                onError={() => setSourceImageFailed(true)}
-              />
-            ) : (
-              <div
-                onClick={() => sourceInputRef.current?.click()}
-                className="flex flex-col items-center justify-center p-4 text-center cursor-pointer hover:text-indigo-400"
-              >
-                <UploadCloud className="w-8 h-8 text-studio-textSubtle mb-2" />
-                <span className="text-xs font-medium">{sourceImageFailed ? t('bridge.sourceImageLoadFailed') : t('bridge.uploadClay')}</span>
-                <span className="text-[10px] text-studio-textSubtle mt-1">{t('bridge.imageFormats')}</span>
-              </div>
-            )}
-          </div>
-
-          <div className="rounded-lg border border-studio-border bg-studio-bg/60 p-2 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-studio-textMuted">{t('bridge.projectAngles')} ({projectViews.length})</span>
-              <div className="flex items-center gap-2">
-                {currentProject && hydratedProjectId === currentProject.id && (draftSaved ? <span className="inline-flex items-center gap-1 text-[9px] text-emerald-300"><Check className="w-3 h-3" />{t('bridge.draftAutoSaved')}</span> : <span className="text-[9px] text-studio-textSubtle">{t('bridge.draftSaving')}</span>)}
-                <button onClick={() => anglesInputRef.current?.click()} className="text-[10px] text-indigo-300 hover:text-white">+ {t('bridge.addAngles')}</button>
-              </div>
-              <input ref={anglesInputRef} type="file" accept="image/png,image/jpeg,image/webp" multiple className="hidden" onChange={(event) => { void handleAddAngleFiles(event.target.files); event.target.value = ''; }} />
-            </div>
-            {projectViews.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
-                {projectViews.map((view, index) => (
-                  <button key={view.id} onClick={() => handleSelectView(view)} title={t(view.approved && approvedDesign?.masterViewId === view.id ? 'bridge.viewStatusMaster' : view.resultGenerationId || view.resultImageBase64 ? 'bridge.viewStatusResult' : 'bridge.viewStatusSource')} className={`inline-flex items-center gap-1.5 text-[10px] rounded-md px-2 py-1 border ${selectedViewId === view.id ? 'border-indigo-400 bg-indigo-500/20 text-white' : 'border-studio-border bg-studio-surface text-studio-textMuted'}`}>
-                    <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full shrink-0 ${view.approved && approvedDesign?.masterViewId === view.id ? 'bg-emerald-400' : view.resultGenerationId || view.resultImageBase64 ? 'bg-sky-400' : 'bg-studio-textSubtle'}`} />
-                    <span>{index + 1}. {view.name}</span>
-                  </button>
-                ))}
-              </div>
-            ) : <div className="text-[10px] text-studio-textSubtle">{t('bridge.addAnglesHint')}</div>}
-            {projectViews.length > 0 && (
-              <div className="flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-studio-textSubtle" aria-label={t('bridge.viewStatusLegend')}>
-                <span className="inline-flex items-center gap-1"><i aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-studio-textSubtle" />{t('bridge.viewStatusSource')}</span>
-                <span className="inline-flex items-center gap-1"><i aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-sky-400" />{t('bridge.viewStatusResult')}</span>
-                <span className="inline-flex items-center gap-1"><i aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-emerald-400" />{t('bridge.viewStatusMaster')}</span>
-              </div>
-            )}
-            {approvedDesign && (
-              <div className="flex items-center justify-between gap-1 border-t border-studio-border pt-2">
-                <span className="text-[10px] text-emerald-300">{t('bridge.masterAvailable')}</span>
-                <button onClick={handleCopyMasterImage} className="text-[10px] text-indigo-300 hover:text-white">{t('bridge.copyMasterImage')}</button>
-              </div>
-            )}
-            {approvedDesign && selectedViewId !== approvedDesign.masterViewId && (
-              <div className="space-y-1.5 border-t border-studio-border pt-2">
-                <textarea value={viewOverrideText} onChange={(event) => setViewOverrideText(event.target.value)} rows={2} placeholder={t('bridge.viewOverridePlaceholder')} className="w-full resize-y rounded-md border border-studio-border bg-studio-surface px-2 py-1.5 text-[10px] text-white placeholder:text-studio-textSubtle" />
-                <button onClick={handleSaveViewOverride} className="text-[10px] text-indigo-300 hover:text-white">{t('bridge.saveViewOverride')}</button>
-              </div>
-            )}
-            {designVariants.length > 0 && (
-              <div className="border-t border-studio-border pt-2 space-y-1">
-                <span className="text-[10px] font-semibold text-studio-textMuted">{t('bridge.savedVariants')} ({designVariants.length})</span>
-                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
-                  {designVariants.map((variant) => (
-                    <button key={variant.id} onClick={() => { void handleApplyDesignVariant(variant); }} className="text-[10px] rounded-md px-2 py-1 border border-amber-500/40 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20">{variant.name}</button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Quick Handoff Buttons for Image */}
-          <div className="space-y-2 pt-1">
-            <button
-              onClick={handleCopyImage}
-              disabled={!sourceImage || sourceImageFailed}
-              className={`w-full flex items-center justify-center space-x-2 py-2 px-3 rounded-lg text-xs font-semibold transition-all shadow-sm ${
-                copiedImage
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50'
-              }`}
-            >
-              {copiedImage ? (
-                <>
-                  <Check className="w-4 h-4 text-white" />
-                  <span>{t('bridge.copiedImage')}</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-4 h-4" />
-                  <span>{t('bridge.copyImage')}</span>
-                </>
-              )}
-            </button>
-
-            <button
-              onClick={handleOpenTempFile}
-              disabled={!sourceImage || sourceImageFailed}
-              className="w-full flex items-center justify-center space-x-2 py-2 px-3 rounded-lg bg-studio-surfaceLight hover:bg-studio-surfaceHover border border-studio-border text-xs font-medium text-studio-textMuted hover:text-white transition-all disabled:opacity-50"
-            >
-              <FolderOpen className="w-4 h-4 text-studio-textSubtle" />
-              <span>{t('bridge.revealFile')}</span>
-            </button>
-
-            {tempFileMessage && (
-              <div className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 p-2 rounded text-center">
-                {tempFileMessage}
-              </div>
-            )}
-          </div>
-
-          {/* Launch Gemini Button */}
-          <div className="pt-2 border-t border-studio-border/60">
-            <button
-              onClick={handleOpenGeminiExternal}
-              disabled={!sourceImage || sourceImageFailed}
-              title={!sourceImage || sourceImageFailed ? t('bridge.sourceRequired') : undefined}
-              className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold transition-all shadow-md shadow-emerald-600/20 active:scale-[0.98]"
-            >
-              <ExternalLink className="w-4 h-4" />
-                <span>{t('bridge.openExternal')}</span>
-            </button>
-            <button onClick={handleOpenGemini} disabled={!sourceImage || sourceImageFailed} title={!sourceImage || sourceImageFailed ? t('bridge.sourceRequired') : undefined} className="w-full mt-1 flex items-center justify-center space-x-2 py-2 px-3 rounded-lg bg-studio-surfaceLight hover:bg-studio-surfaceHover disabled:opacity-50 disabled:cursor-not-allowed border border-studio-border text-[11px] font-medium text-studio-textMuted hover:text-white">
-              <ExternalLink className="w-3.5 h-3.5" />
-              <span>{t('bridge.openEmbedded')}</span>
-            </button>
-            {(!sourceImage || sourceImageFailed) && <div className="text-[10px] text-center text-amber-300">{t('bridge.sourceRequired')}</div>}
-            {bridgeMessage && <div className="text-[10px] text-center text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-lg">{bridgeMessage}</div>}
-            <span className="block text-[10px] text-center text-studio-textSubtle mt-1.5">
-              {t('bridge.openHint')}
-            </span>
-          </div>
-
-          {downloadedImage && (
-            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 space-y-2">
-              <div className="text-[10px] text-emerald-200 break-all">{t('bridge.downloadReady')}: {downloadedImage.fileName} ({(downloadedImage.byteLength / 1024 / 1024).toFixed(1)} MB)</div>
-              <button disabled={downloadedImage.byteLength > 50 * 1024 * 1024} onClick={handleImportDownloaded} className="w-full rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-semibold py-2">{t('bridge.importDownloaded')}</button>
-              {downloadedImage.byteLength > 50 * 1024 * 1024 && <div className="text-[10px] text-amber-300">{t('bridge.downloadTooLarge')}</div>}
-            </div>
-          )}
-
-          {/* Step checklist guide */}
-          <div className="mt-auto bg-studio-surfaceLight/60 border border-studio-border/70 rounded-lg p-2.5 space-y-1.5 text-[11px]">
-            <span className="font-semibold text-white block mb-1">{t('bridge.stepsTitle')}:</span>
-            <div className="flex items-start space-x-1.5 text-studio-textMuted">
-              <span className="font-mono text-indigo-400 font-bold">1.</span>
-              <span>{t('bridge.stepCopy')}</span>
-            </div>
-            <div className="flex items-start space-x-1.5 text-studio-textMuted">
-              <span className="font-mono text-indigo-400 font-bold">2.</span>
-              <span>{t('bridge.stepOpen')}</span>
-            </div>
-            <div className="flex items-start space-x-1.5 text-studio-textMuted">
-              <span className="font-mono text-indigo-400 font-bold">3.</span>
-              <span>{approvedDesign ? t('bridge.stepPasteWithMaster') : t('bridge.stepPaste')}</span>
-            </div>
-            <div className="flex items-start space-x-1.5 text-studio-textMuted">
-              <span className="font-mono text-indigo-400 font-bold">4.</span>
-              <span>{t('bridge.stepPrompt')}</span>
-            </div>
-            <div className="flex items-start space-x-1.5 text-studio-textMuted">
-              <span className="font-mono text-indigo-400 font-bold">5.</span>
-              <span>{t('bridge.stepDownload')}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* CENTER COLUMN: Architectural Parameters & Prompt Builder (5 cols) */}
-        <div className="col-span-5 flex flex-col space-y-3 bg-studio-surface border border-studio-border rounded-xl p-3.5 overflow-hidden">
-          {/* Header with Copy & Controls */}
-          <div className="flex items-center gap-2 shrink-0 min-w-0">
-            <div className="grid grid-cols-4 flex-1 min-w-0 items-center gap-0.5 bg-studio-bg p-1 rounded-lg border border-studio-border text-xs">
-              <button
-                onClick={() => setActiveParamTab('architecture')}
-                  className={`min-w-0 whitespace-nowrap px-1.5 py-1 rounded-md text-[10px] font-medium transition-all ${
-                  activeParamTab === 'architecture'
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'text-studio-textMuted hover:text-white'
-                }`}
-              >
-                {t('bridge.tabArchitecture')}
+          {step === 'source' && (!currentProject ? <button className={primaryClass} onClick={onNewProject}><Plus size={17} />{t('action.newProject')}</button> :
+            <div className="bridge-source-layout">
+              <button className={'bridge-dropzone' + (draggingSource ? ' is-dragging' : '')} disabled={busy}
+                onClick={() => sourceInputRef.current?.click()} onDragOver={(event) => { event.preventDefault(); setDraggingSource(true); }}
+                onDragLeave={() => setDraggingSource(false)} onDrop={(event) => { setDraggingSource(false); dropFile(event, uploadSource); }}>
+                {ready && sourceImage ? <img src={toImageDataUrl(sourceImage, sourceMimeType)} alt={t('bridge.sourceImageAlt')} onError={() => setSourceImageFailed(true)} /> :
+                  <><UploadCloud size={30} /><strong>{t(sourceImageFailed ? 'bridge.sourceImageLoadFailed' : 'bridgeFlow.chooseSource')}</strong><span>{t('bridgeFlow.dropHint')}</span></>}
               </button>
-              <button
-                onClick={() => setActiveParamTab('materials')}
-                  className={`min-w-0 whitespace-nowrap px-1.5 py-1 rounded-md text-[10px] font-medium transition-all ${
-                  activeParamTab === 'materials'
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'text-studio-textMuted hover:text-white'
-                }`}
-              >
-                {t('bridge.tabMaterials', { count: selectedMaterials.length })}
-              </button>
-              <button
-                onClick={() => setActiveParamTab('specs')}
-                  className={`min-w-0 whitespace-nowrap px-1.5 py-1 rounded-md text-[10px] font-medium transition-all ${
-                  activeParamTab === 'specs'
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'text-studio-textMuted hover:text-white'
-                }`}
-              >
-                {t('bridge.tabSpecs')}
-              </button>
-              <button
-                onClick={() => setActiveParamTab('prompt')}
-                  className={`min-w-0 whitespace-nowrap px-1.5 py-1 rounded-md text-[10px] font-medium transition-all ${
-                  activeParamTab === 'prompt'
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'text-studio-textMuted hover:text-white'
-                }`}
-              >
-                {t('bridge.tabPrompt')}
-              </button>
-            </div>
+              <div className="bridge-stack">
+                {view && <>
+                  <label className="bridge-field">{t('bridge.projectAngles')}<select className={controlClass} value={selectedViewId} disabled={busy}
+                    onChange={(event) => { const next = projectViews.find((item) => item.id === event.target.value); if (next) void handleSelectView(next); }}>
+                    {projectViews.map((item) => <option key={item.id} value={item.id}>{item.name}{item.resultGenerationId ? ' ✓' : ''}</option>)}
+                  </select></label>
+                  <button className={buttonClass} disabled={busy} onClick={() => anglesInputRef.current?.click()}><Plus size={16} />{t('bridge.addAngles')}</button>
+                </>}
+                {designVariants.length > 0 && <details className="bridge-details"><summary>{t('bridge.savedVariants')}<ChevronDown size={16} /></summary>
+                  <div className="bridge-actions">{designVariants.map((variant) => <button key={variant.id} className={buttonClass} disabled={busy}
+                    onClick={() => run(async () => { await handleApplyDesignVariant(variant); goTo('result'); })}>{variant.name}</button>)}</div>
+                </details>}
+              </div>
+            </div>)}
 
-            <button
-              onClick={handleCopyPrompt}
-              className={`shrink-0 flex items-center space-x-1.5 px-2 py-1.5 rounded-lg text-[11px] font-semibold whitespace-nowrap transition-all shadow-sm ${
-                copiedPrompt
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-indigo-600 hover:bg-indigo-500 text-white active:scale-[0.98]'
-              }`}
-            >
-              {copiedPrompt ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-white" />
-                  <span>{t('bridge.copied')}</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>{t('bridge.copy')}</span>
-                </>
-              )}
+          {step === 'design' && <fieldset disabled={busy} className="bridge-stack">
+            <div className="bridge-field-grid">
+              {select(t('bridge.roomType'), roomType, setRoomType, ROOM_TYPES.map((item) => ({ id: item.id, text: label(item) })))}
+              {select(t('bridge.interiorStyle'), styleId, setStyleId, INTERIOR_STYLES.map((item) => ({ id: item.id, text: STYLE_NAMES[item.id]?.[language] || item.name })))}
+              {select(t('bridge.lighting'), lightingId, setLightingId, LIGHTING_OPTIONS.map((item) => ({ id: item.id, text: label(item) })))}
+            </div>
+            <label className="bridge-field">{t('bridgeFlow.designNotes')}<textarea className={controlClass} rows={3} value={customStyle}
+              onChange={(event) => { setCustomStyle(event.target.value); setPromptOverride(null); }} placeholder={t('bridgeFlow.designPlaceholder')} /></label>
+            <div><h3>{t('bridgeFlow.geometry')}</h3><div className="bridge-field-grid mt-2">
+              {(['strict', 'balanced', 'creative'] as const).map((mode) => <button key={mode} className="bridge-choice" aria-pressed={geometryMode === mode}
+                onClick={() => { setGeometryMode(mode); setPromptOverride(null); }}><strong>{t('bridgeFlow.' + mode)}</strong><span>{t('bridgeFlow.' + mode + 'Hint')}</span></button>)}
+            </div></div>
+            <details className="bridge-details"><summary>{t('bridgeFlow.materials')}<ChevronDown size={16} /></summary>
+              <div className="bridge-stack">
+                <div className="bridge-chips">{MATERIAL_OPTIONS.map((item) => <button key={item.id} className="bridge-chip"
+                  aria-pressed={selectedMaterials.includes(item.id)} onClick={() => toggleMaterial(item.id)}>{label(item)}</button>)}</div>
+                <div className="bridge-field-grid">{surfaceFields.map((field) => <div key={field.id}>{select(field.label, surfaceAssignments[field.id] || '',
+                  (value) => setSurfaceMaterial(field.id, value), [{ id: '', text: t('bridge.surfaceUnassigned') }, ...MATERIAL_OPTIONS.map((item) => ({ id: item.id, text: label(item) }))])}</div>)}</div>
+              </div>
+            </details>
+            <details className="bridge-details"><summary>{t('bridgeFlow.detailSettings')}<ChevronDown size={16} /></summary>
+              <div className="bridge-stack">
+                <div className="bridge-field-grid">
+                  {select(t('bridge.atmosphere'), atmosphereId, setAtmosphereId, ATMOSPHERE_OPTIONS.map((item) => ({ id: item.id, text: label(item) })))}
+                  {select(t('bridge.cameraOptics'), cameraOptics, setCameraOptics, [{ id: 'tilt_shift_24mm', text: '24 mm Tilt-Shift' }, { id: 'prime_35mm', text: '35 mm Prime' }, { id: '50mm', text: '50 mm' }])}
+                </div>
+                {([
+                  ['customMaterials', customMaterials, setCustomMaterials], ['customLighting', customLighting, setCustomLighting],
+                  ['customDecor', customDecor, setCustomDecor], ['negativePrompt', negativePrompt, setNegativePrompt],
+                ] as const).map(([key, value, setter]) => <label key={key} className="bridge-field">{t('bridge.' + key)}<textarea rows={2} className={controlClass} value={value}
+                  onChange={(event) => { setter(event.target.value); setPromptOverride(null); }} /></label>)}
+                {reference && <><textarea aria-label={t('bridge.viewOverridePlaceholder')} placeholder={t('bridge.viewOverridePlaceholder')} className={controlClass}
+                  value={viewOverrideText} onChange={(event) => setViewOverrideText(event.target.value)} />
+                  <button className={buttonClass} onClick={() => run(handleSaveViewOverride)}>{t('bridge.saveViewOverride')}</button></>}
+              </div>
+            </details>
+            <details className="bridge-details"><summary>{t('bridgeFlow.prompt')}<ChevronDown size={16} /></summary><div className="bridge-stack">
+              <textarea aria-label={t('bridgeFlow.prompt')} className={controlClass} rows={8} value={generatedPrompt} onChange={(event) => setPromptOverride(event.target.value)} />
+              {promptOverride !== null && <button className={buttonClass} onClick={() => setPromptOverride(null)}>{t('bridge.regeneratePrompt')}</button>}
+            </div></details>
+          </fieldset>}
+
+          {step === 'gemini' && <div className="bridge-stack">
+            {!pending ? <div className="bridge-actions">
+              <button className={primaryClass} disabled={busy || !generatedPrompt.trim()} onClick={() => run(() => startGemini('browser'), t('bridge.openFailed'))}><ExternalLink size={17} />{t('bridge.openGemini')}</button>
+              {window.electronAPI && <button className={buttonClass} disabled={busy || !generatedPrompt.trim()} onClick={() => run(() => startGemini('embedded'), t('bridge.openFailed'))}>{t('bridgeFlow.embedded')}</button>}
+            </div> : <>
+              <ol className="bridge-instructions">
+                <li><div><strong>{t('bridgeFlow.pasteSource')}</strong><p>{t('bridgeFlow.pasteSourceHint')}</p></div>
+                  <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                    const input = handoffImage();
+                    if (!await geminiBridgeService.copyImageToClipboard(input.image, input.mime)) throw new Error('clipboard');
+                    updateHandoffFlags({ copiedImage: true }); setBridgeMessage(t('bridgeFlow.sourceCopied'));
+                  }, t('bridgeFlow.copyImageFailed'))}>{pending.copiedImage ? <Check size={16} /> : <Copy size={16} />}{t('bridgeFlow.copyImage')}</button></li>
+                {reference && !pending.parentId && <li><div><strong>{t('bridgeFlow.pasteReference')}</strong><p>{t('bridge.stepPasteWithMaster')}</p></div>
+                  <button className={buttonClass} disabled={busy} onClick={() => run(handleCopyMasterImage, t('bridge.masterCopyFailed'))}>{pending.copiedReference && <Check size={16} />}{t('bridge.copyMasterImage')}</button></li>}
+                <li><div><strong>{t('bridgeFlow.pastePrompt')}</strong><p>{t('bridgeFlow.pastePromptHint')}</p></div>
+                  <button className={primaryClass} disabled={busy} onClick={() => run(async () => {
+                    if (!await geminiBridgeService.copyText(pending.prompt)) throw new Error('clipboard');
+                    updateHandoffFlags({ copiedPrompt: true }); setBridgeMessage(t('bridgeFlow.promptCopied'));
+                  }, t('bridgeFlow.copyPromptFailed'))}>{pending.copiedPrompt ? <Check size={16} /> : <Copy size={16} />}{t('bridgeFlow.copyRequest')}</button></li>
+                <li><div><strong>{t('bridgeFlow.download')}</strong><p>{t('bridgeFlow.downloadHint')}</p></div>
+                  <button className={buttonClass} disabled={busy} onClick={() => goTo('result')}><ArrowRight size={16} />{t('bridgeFlow.result')}</button></li>
+              </ol>
+              <details className="bridge-details"><summary>{t('bridgeFlow.transferOptions')}<ChevronDown size={16} /></summary><div className="bridge-stack">
+                <div className="bridge-actions">
+                  <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+                    const input = handoffImage();
+                    if (!await geminiBridgeService.prepareTempFileAndReveal(input.image, 'gemini-source.png', input.mime)) throw new Error('file');
+                    setBridgeMessage(t('bridge.tempReady'));
+                  }, t('bridgeFlow.copyImageFailed'))}><FolderOpen size={16} />{t('bridge.revealFile')}</button>
+                  <button className={buttonClass} disabled={busy} onClick={() => setPending(null)}>{t('bridgeFlow.restart')}</button>
+                </div>
+                <textarea className={controlClass} aria-label={t('bridgeFlow.prompt')} rows={5} readOnly value={pending.prompt} onFocus={(event) => event.currentTarget.select()} />
+              </div></details>
+            </>}
+          </div>}
+
+          {(step === 'gemini' || step === 'result') && pending && downloads.length > 0 && <div className="bridge-downloads">
+            <h3>{t('bridgeFlow.foundDownloads')}</h3>
+            {downloads.map((item) => <div key={item.filePath} className="bridge-download">
+              <span><Download size={16} />{item.fileName}</span><button className={primaryClass} disabled={busy || item.byteLength > 50 * 1024 * 1024}
+                onClick={() => run(async () => {
+                  const data = await window.electronAPI?.readRecentGeminiImage(pending.mode, pending.since, item.filePath);
+                  if (!data) throw new Error('read-download');
+                  await importResult(imageFileFromBase64(data.base64, data.fileName, data.mimeType), item.filePath);
+                }, t('bridge.importFailed'))}>{t(item.byteLength > 50 * 1024 * 1024 ? 'bridgeFlow.tooLarge' : 'bridge.importResult')}</button>
+            </div>)}
+          </div>}
+
+          {step === 'result' && <div className="bridge-stack">
+            {resultLoading && <p role="status" className="bridge-muted">{t('app.loadingView')}</p>}
+            {importedResult && sourceImage && <>
+              <figure className="bridge-comparison">
+                <div className="bridge-compare-images" style={{ aspectRatio: importedResult.width / importedResult.height }}>
+                  <img src={toImageDataUrl(importedResult.imageBase64, importedResult.mimeType)} alt={t('bridge.renderLabel')} />
+                  <img src={toImageDataUrl(sourceImage, sourceMimeType)} alt={t('bridge.sourceLabel')} style={{ clipPath: 'inset(0 ' + (100 - sliderPosition) + '% 0 0)' }} />
+                  <span className="bridge-divider" style={{ left: sliderPosition + '%' }} />
+                </div>
+                <label className="bridge-range"><span>{t('bridge.sourceLabel')}</span><input aria-label={t('bridge.compareTitle')} type="range" min={0} max={100}
+                  value={sliderPosition} onChange={(event) => setSliderPosition(Number(event.target.value))} /><span>{t('bridge.renderLabel')}</span></label>
+              </figure>
+              <div className="bridge-actions">
+                <button className={primaryClass} onClick={() => downloadResult(importedResult)}><Download size={17} />{t('bridge.saveImage')}</button>
+                <button className={buttonClass} aria-expanded={upscaleOpen} onClick={() => setUpscaleOpen((open) => !open)}><Sparkles size={16} />{t('cloudUpscale.title')}</button>
+              </div>
+              {upscaleOpen && <CloudUpscalePanel key={importedResult.id} result={importedResult} onSettings={onNavigateSettings} />}
+              <details className="bridge-details"><summary>{t('bridgeFlow.refine')}<ChevronDown size={16} /></summary><div className="bridge-stack">
+                <textarea className={controlClass} aria-label={t('bridgeFlow.refine')} placeholder={t('bridgeFlow.refinePlaceholder')} rows={2}
+                  value={refinementText} onChange={(event) => setRefinementText(event.target.value)} />
+                <button className={primaryClass} disabled={busy || !refinementText.trim()} onClick={() => run(() => startGemini('browser', true), t('bridge.openFailed'))}>
+                  <ExternalLink size={16} />{t('bridgeFlow.openRefinement')}</button>
+              </div></details>
+              <details className="bridge-details"><summary>{t('bridgeFlow.designActions')}<ChevronDown size={16} /></summary><div className="bridge-actions">
+                <button className={buttonClass} disabled={busy} onClick={() => run(handleApproveDesign)}>{t('bridge.approveAsMaster')}</button>
+                <button className={buttonClass} disabled={busy} onClick={() => run(handleSaveDesignVariant)}>{t('bridge.saveVariant')}</button>
+              </div></details>
+            </>}
+            <button className={'bridge-dropzone bridge-result-drop' + (draggingResult ? ' is-dragging' : '')} disabled={busy || !ready}
+              onClick={() => fileInputRef.current?.click()} onDragOver={(event) => { event.preventDefault(); setDraggingResult(true); }}
+              onDragLeave={() => setDraggingResult(false)} onDrop={(event) => { setDraggingResult(false); dropFile(event, importResult); }}>
+              <ImageIcon size={25} /><strong>{t(importedResult ? 'bridgeFlow.importAnother' : 'bridgeFlow.chooseResult')}</strong><span>{t('bridgeFlow.dropHint')}</span>
             </button>
-          </div>
+            {window.electronAPI && <button className={buttonClass} disabled={busy || !ready} onClick={() => run(async () => {
+              if (pending && !pending.copiedPrompt) { setErrorMessage(t('bridgeFlow.clipboardPromptFirst')); return; }
+              const image = await window.electronAPI?.readGeminiClipboardImage();
+              if (!image) { setErrorMessage(t('bridgeFlow.noClipboardImage')); return; }
+              await importResult(imageFileFromBase64(image, 'Gemini.png', 'image/png'));
+            }, t('bridge.importFailed'))}><Clipboard size={16} />{t('bridgeFlow.pasteResult')}</button>}
+          </div>}
 
-          {/* TAB 1: Architecture & Style & Geometry Mode */}
-          {activeParamTab === 'architecture' && (
-            <div className="flex-1 overflow-y-auto space-y-3.5 pr-1 text-xs">
-              {/* Geometry Preservation Mode */}
-              <div className="space-y-1.5 bg-studio-bg/60 border border-studio-border p-2.5 rounded-xl">
-                <span className="text-[11px] font-bold text-white uppercase tracking-wider block">
-                  {t('bridge.geometryModeTitle')}
-                </span>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() => { setGeometryMode('strict'); setIsPromptCustomized(false); }}
-                    className={`p-2 rounded-lg border text-left transition-all ${
-                      geometryMode === 'strict'
-                        ? 'border-emerald-500 bg-emerald-500/15 text-white shadow-sm'
-                        : 'border-studio-border bg-studio-surface text-studio-textMuted hover:text-white'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between font-bold text-[11px] text-emerald-400">
-                      <span>MODE 1</span>
-                      <span className="text-[9px] bg-emerald-500/20 px-1.5 py-0.5 rounded">{t('bridge.strictScore')}</span>
-                    </div>
-                    <div className="font-semibold text-white mt-0.5">{t('bridge.strictName')}</div>
-                    <p className="text-[10px] text-zinc-400 mt-1 leading-tight">
-                      {t('bridge.strictDesc')}
-                    </p>
-                  </button>
-
-                  <button
-                    onClick={() => { setGeometryMode('balanced'); setIsPromptCustomized(false); }}
-                    className={`p-2 rounded-lg border text-left transition-all ${
-                      geometryMode === 'balanced'
-                        ? 'border-indigo-500 bg-indigo-500/15 text-white shadow-sm'
-                        : 'border-studio-border bg-studio-surface text-studio-textMuted hover:text-white'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between font-bold text-[11px] text-indigo-400">
-                      <span>MODE 2</span>
-                      <span className="text-[9px] bg-indigo-500/20 px-1.5 py-0.5 rounded">{t('bridge.balancedScore')}</span>
-                    </div>
-                    <div className="font-semibold text-white mt-0.5">{t('bridge.balancedName')}</div>
-                    <p className="text-[10px] text-zinc-400 mt-1 leading-tight">
-                      {t('bridge.balancedDesc')}
-                    </p>
-                  </button>
-
-                  <button
-                    onClick={() => { setGeometryMode('creative'); setIsPromptCustomized(false); }}
-                    className={`p-2 rounded-lg border text-left transition-all ${
-                      geometryMode === 'creative'
-                        ? 'border-amber-500 bg-amber-500/15 text-white shadow-sm'
-                        : 'border-studio-border bg-studio-surface text-studio-textMuted hover:text-white'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between font-bold text-[11px] text-amber-400">
-                      <span>MODE 3</span>
-                      <span className="text-[9px] bg-amber-500/20 px-1.5 py-0.5 rounded">{t('bridge.creativeScore')}</span>
-                    </div>
-                    <div className="font-semibold text-white mt-0.5">{t('bridge.creativeName')}</div>
-                    <p className="text-[10px] text-zinc-400 mt-1 leading-tight">
-                      {t('bridge.creativeDesc')}
-                    </p>
-                  </button>
-                </div>
-              </div>
-
-              {/* Room Type Selector */}
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-semibold text-white">
-                  {t('bridge.roomType')}
-                </label>
-                <select
-                  value={roomType}
-                  onChange={(e) => { setRoomType(e.target.value); setIsPromptCustomized(false); }}
-                  className="w-full bg-studio-bg border border-studio-border focus:border-indigo-500 rounded-lg px-3 py-2 text-xs text-white focus:outline-none"
-                >
-                  {ROOM_TYPES.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {language === 'uk' ? r.labelUk : language === 'en' ? r.labelEn : r.labelRu}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Interior Style Grid */}
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-semibold text-white">
-                  {t('bridge.interiorStyle')}
-                </label>
-                <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
-                  {INTERIOR_STYLES.map((st) => {
-                    const isSelected = styleId === st.id;
-                    return (
-                      <button
-                        key={st.id}
-                        onClick={() => { setStyleId(st.id); setIsPromptCustomized(false); }}
-                        className={`p-2 rounded-lg border text-left flex items-start space-x-2 transition-all ${
-                          isSelected
-                            ? 'border-indigo-500 bg-indigo-500/20 text-white font-semibold'
-                            : 'border-studio-border bg-studio-bg text-studio-textMuted hover:text-white'
-                        }`}
-                      >
-                        <div
-                          className="w-3.5 h-3.5 rounded-full shrink-0 mt-0.5"
-                          style={{ backgroundColor: st.previewColor || '#6366f1' }}
-                        />
-                        <div className="truncate">
-                          <div className="text-xs truncate">{STYLE_NAMES[st.id]?.[language] || st.name}</div>
-                          <div className="text-[9px] text-zinc-400 truncate opacity-80">{language === 'uk' ? st.descriptionUk : language === 'en' ? st.descriptionEn : st.descriptionRu}</div>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Lighting & Atmosphere Selectors */}
-              <div className="grid grid-cols-2 gap-2 pt-1">
-                <div className="space-y-1">
-                  <label className="text-[11px] font-medium text-studio-textMuted">
-                    💡 {t('bridge.lighting')}
-                  </label>
-                  <select
-                    value={lightingId}
-                    onChange={(e) => { setLightingId(e.target.value); setIsPromptCustomized(false); }}
-                    className="w-full bg-studio-bg border border-studio-border focus:border-indigo-500 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
-                  >
-                    {LIGHTING_OPTIONS.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {language === 'uk' ? l.labelUk : language === 'en' ? l.labelEn : l.labelRu}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[11px] font-medium text-studio-textMuted">
-                    ✨ {t('bridge.atmosphere')}
-                  </label>
-                  <select
-                    value={atmosphereId}
-                    onChange={(e) => { setAtmosphereId(e.target.value); setIsPromptCustomized(false); }}
-                    className="w-full bg-studio-bg border border-studio-border focus:border-indigo-500 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
-                  >
-                    {ATMOSPHERE_OPTIONS.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {language === 'uk' ? a.labelUk : language === 'en' ? a.labelEn : a.labelRu}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: Materials Palette Chips */}
-          {activeParamTab === 'materials' && (
-            <div className="flex-1 min-h-0 flex flex-col space-y-3 pr-1 text-xs overflow-hidden">
-              <div className="flex items-center justify-between pb-1 border-b border-studio-border/60 shrink-0">
-                <span className="text-[11px] font-bold text-white uppercase tracking-wider">
-                  {t('bridge.materialPalette')}
-                </span>
-                <span className="text-[10px] text-indigo-400">
-                  {t('bridge.selectedCount', { count: selectedMaterials.length })}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-1 content-start auto-rows-max">
-                {MATERIAL_OPTIONS.map((mat) => {
-                  const isChecked = selectedMaterials.includes(mat.id);
-                  return (
-                    <button
-                      key={mat.id}
-                      onClick={() => toggleMaterial(mat.id)}
-                      className={`min-w-0 p-2.5 rounded-lg border text-left flex items-start space-x-2.5 transition-all ${
-                        isChecked
-                          ? 'border-indigo-500 bg-indigo-500/15 text-white'
-                          : 'border-studio-border bg-studio-bg text-studio-textMuted hover:text-white'
-                      }`}
-                    >
-                      <div className="shrink-0 mt-0.5">
-                        {isChecked ? (
-                          <CheckSquare className="w-4 h-4 text-indigo-400" />
-                        ) : (
-                          <Square className="w-4 h-4 text-zinc-500" />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-xs text-white whitespace-normal break-words leading-snug">{language === 'uk' ? mat.labelUk : language === 'en' ? mat.labelEn : mat.labelRu}</div>
-                        <div className="text-[10px] text-zinc-400 whitespace-normal break-words leading-snug opacity-80 mt-0.5">{mat.promptDescription}</div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* TAB 3: Architect's Custom Manual Specifications & Camera Optics */}
-          {activeParamTab === 'specs' && (
-            <div className="flex-1 overflow-y-auto space-y-3 pr-1 text-xs">
-              {/* Camera Optics */}
-              <div className="space-y-1.5 bg-studio-bg/60 border border-studio-border p-2.5 rounded-xl">
-                <div className="flex items-center space-x-1.5 font-semibold text-white text-[11px]">
-                  <Camera className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>{t('bridge.cameraOptics')}</span>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() => { setCameraOptics('tilt_shift_24mm'); setIsPromptCustomized(false); }}
-                    className={`p-2 rounded-lg border text-left transition-all ${
-                      cameraOptics === 'tilt_shift_24mm'
-                        ? 'border-indigo-500 bg-indigo-500/20 text-white'
-                        : 'border-studio-border bg-studio-surface text-studio-textMuted hover:text-white'
-                    }`}
-                  >
-                    <div className="font-bold text-[11px]">24mm Tilt-Shift</div>
-                    <div className="text-[9px] text-zinc-400 mt-0.5">{t('bridge.opticsTiltShift')}</div>
-                  </button>
-
-                  <button
-                    onClick={() => { setCameraOptics('prime_35mm'); setIsPromptCustomized(false); }}
-                    className={`p-2 rounded-lg border text-left transition-all ${
-                      cameraOptics === 'prime_35mm'
-                        ? 'border-indigo-500 bg-indigo-500/20 text-white'
-                        : 'border-studio-border bg-studio-surface text-studio-textMuted hover:text-white'
-                    }`}
-                  >
-                    <div className="font-bold text-[11px]">35mm Prime</div>
-                    <div className="text-[9px] text-zinc-400 mt-0.5">{t('bridge.opticsPrime')}</div>
-                  </button>
-
-                  <button
-                    onClick={() => { setCameraOptics('50mm'); setIsPromptCustomized(false); }}
-                    className={`p-2 rounded-lg border text-left transition-all ${
-                      cameraOptics === '50mm'
-                        ? 'border-indigo-500 bg-indigo-500/20 text-white'
-                        : 'border-studio-border bg-studio-surface text-studio-textMuted hover:text-white'
-                    }`}
-                  >
-                    <div className="font-bold text-[11px]">50mm Lens</div>
-                    <div className="text-[9px] text-zinc-400 mt-0.5">{t('bridge.opticsCinematic')}</div>
-                  </button>
-                </div>
-              </div>
-
-              {/* Architect's Custom Manual Specifications */}
-              <div className="space-y-2 bg-studio-surfaceLight/80 border border-studio-border rounded-xl p-3">
-                <span className="text-[11px] font-semibold text-indigo-300 block">
-                  {t('bridge.manualInputs')}
-                </span>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-medium text-studio-textMuted uppercase tracking-wider block">
-                    🎨 {t('bridge.customMaterials')}
-                  </label>
-                  <input
-                    type="text"
-                    value={customMaterials}
-                    onChange={(e) => {
-                      setCustomMaterials(e.target.value);
-                      setIsPromptCustomized(false);
-                    }}
-                    placeholder={t('bridge.customMaterialsPlaceholder')}
-                    className="w-full bg-studio-bg border border-studio-border rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-studio-textSubtle focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-
-                <div className="space-y-2 rounded-lg border border-indigo-500/20 bg-indigo-500/5 p-2.5">
-                  <div>
-                    <span className="text-[10px] font-semibold text-indigo-200 block">{t('bridge.surfaceMapTitle')}</span>
-                    <span className="text-[9px] leading-tight text-studio-textSubtle">{t('bridge.surfaceMapDesc')}</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {surfaceFields.map((surface) => (
-                      <label key={surface.id} className="min-w-0 space-y-1">
-                        <span className="text-[9px] text-studio-textMuted">{surface.label}</span>
-                        <select
-                          value={surfaceAssignments[surface.id] || ''}
-                          onChange={(event) => setSurfaceMaterial(surface.id, event.target.value)}
-                          className="w-full min-w-0 bg-studio-bg border border-studio-border rounded-md px-2 py-1.5 text-[10px] text-white focus:outline-none focus:border-indigo-500"
-                        >
-                          <option value="">{t('bridge.surfaceUnassigned')}</option>
-                          {MATERIAL_OPTIONS.map((material) => (
-                            <option key={material.id} value={material.id}>{language === 'uk' ? material.labelUk : language === 'en' ? material.labelEn : material.labelRu}</option>
-                          ))}
-                        </select>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-medium text-studio-textMuted uppercase tracking-wider block">
-                    💡 {t('bridge.customLighting')}
-                  </label>
-                  <input
-                    type="text"
-                    value={customLighting}
-                    onChange={(e) => {
-                      setCustomLighting(e.target.value);
-                      setIsPromptCustomized(false);
-                    }}
-                    placeholder={t('bridge.customLightingPlaceholder')}
-                    className="w-full bg-studio-bg border border-studio-border rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-studio-textSubtle focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-medium text-studio-textMuted uppercase tracking-wider block">
-                    🏺 {t('bridge.customDecor')}
-                  </label>
-                  <input
-                    type="text"
-                    value={customDecor}
-                    onChange={(e) => {
-                      setCustomDecor(e.target.value);
-                      setIsPromptCustomized(false);
-                    }}
-                    placeholder={t('bridge.customDecorPlaceholder')}
-                    className="w-full bg-studio-bg border border-studio-border rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-studio-textSubtle focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-              </div>
-
-              {/* Negative Prompt */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-medium text-studio-textMuted uppercase tracking-wider block">
-                  🚫 {t('bridge.negativePrompt')}
-                </label>
-                <textarea
-                  value={negativePrompt}
-                  onChange={(e) => { setNegativePrompt(e.target.value); setIsPromptCustomized(false); }}
-                  rows={2}
-                  className="w-full bg-studio-bg border border-studio-border rounded-lg px-2.5 py-1.5 text-[11px] text-zinc-300 focus:outline-none focus:border-indigo-500 resize-none font-mono"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* TAB 4: Final Prompt Display / Full Editor */}
-          {activeParamTab === 'prompt' && (
-            <div className="flex-1 flex flex-col space-y-2 overflow-hidden text-xs">
-              <div className="flex items-center justify-between text-[11px] text-studio-textMuted">
-                <span>{t('bridge.finalPrompt')}</span>
-                <button
-                  onClick={() => setIsPromptCustomized(false)}
-                  className="flex items-center space-x-1 text-indigo-400 hover:text-indigo-300 text-[10px]"
-                >
-                  <RefreshCw className="w-3 h-3" />
-                  <span>{t('bridge.regeneratePrompt')}</span>
-                </button>
-              </div>
-
-              <textarea
-                value={generatedPrompt}
-                onChange={(e) => {
-                  setGeneratedPrompt(e.target.value);
-                  setIsPromptCustomized(true);
-                }}
-                className="w-full flex-1 bg-studio-bg border border-studio-border rounded-xl p-3 text-xs text-studio-text font-mono leading-relaxed resize-none focus:outline-none focus:border-indigo-500 select-text"
-              />
-            </div>
-          )}
-
-          {/* Mini Prompt Preview Bar when on other tabs */}
-          {activeParamTab !== 'prompt' && (
-            <div className="mt-auto shrink-0 bg-studio-bg/90 border border-studio-border rounded-xl p-2.5 space-y-1.5">
-              <div className="flex items-center justify-between text-[10px] text-studio-textMuted">
-                <span className="font-semibold text-white">{t('bridge.promptPreview')}</span>
-                <button
-                  onClick={() => setActiveParamTab('prompt')}
-                  className="text-indigo-400 hover:underline flex items-center space-x-1"
-                >
-                  <span>{t('bridge.expandEditor')}</span>
-                  <Maximize2 className="w-2.5 h-2.5" />
-                </button>
-              </div>
-              <p className="text-[11px] font-mono text-zinc-300 line-clamp-2 leading-tight opacity-90 select-text">
-                {generatedPrompt}
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* RIGHT COLUMN: Import Result & Before/After Comparison (4 cols) */}
-        <div className="col-span-4 flex flex-col space-y-3 bg-studio-surface border border-studio-border rounded-xl p-3.5 overflow-y-auto">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-white tracking-wide uppercase">
-              {t('bridge.resultTitle')}
-            </span>
-            {importedResult && (
-              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                {t('bridge.projectLinked')}
-              </span>
-            )}
-          </div>
-
-          {/* Import Dropzone */}
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setIsDragging(true);
-            }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={handleFileDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-2 ${
-              isDragging
-                ? 'border-indigo-500 bg-indigo-500/10'
-                : 'border-studio-border hover:border-studio-borderHover bg-studio-surfaceLight/50'
-            }`}
-          >
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileInputChange}
-              accept="image/*"
-              className="hidden"
-            />
-            <div className="p-2.5 rounded-full bg-indigo-500/10 text-indigo-400">
-              <UploadCloud className="w-6 h-6" />
-            </div>
-            <div>
-                <span className="text-xs font-semibold text-white block">{t('bridge.dropResult')}</span>
-              <span className="text-[10px] text-studio-textSubtle block mt-0.5">
-                {t('bridge.selectResult')}
-              </span>
-            </div>
-          </div>
-
-          {/* Display Result / Comparison */}
-          {importedResult ? (
-            <div className="space-y-3 pt-2">
-              <div className="flex items-center justify-between text-xs font-medium">
-                <span className="text-white">{t('bridge.compareTitle')}</span>
-                <span className="text-[10px] text-studio-textSubtle">
-                  {importedResult.width} × {importedResult.height} px
-                  {' · '}{importedResult.mimeType}
-                </span>
-              </div>
-
-              {/* Before/After Split View */}
-              <div className="relative aspect-video rounded-xl overflow-hidden border border-studio-border bg-black select-none">
-                {/* Result Image (Bottom) */}
-                <img
-                  src={toImageDataUrl(importedResult.imageBase64, importedResult.mimeType)}
-                  alt="Gemini Render"
-                  className="absolute inset-0 w-full h-full object-cover"
-                />
-
-                {/* Original Image (Top clipped by slider) */}
-                {sourceImage && !sourceImageFailed && (
-                  <div
-                    className="absolute inset-0 overflow-hidden"
-                    style={{ width: `${sliderPosition}%` }}
-                  >
-                    <img
-                      src={toImageDataUrl(sourceImage, sourceMimeType)}
-                      alt="Archicad Reference"
-                      className="absolute inset-0 w-full h-full object-cover max-w-none"
-                      style={{ width: '100%', height: '100%' }}
-                    />
-                    <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-sm text-[9px] font-mono px-2 py-0.5 rounded text-white border border-white/10">
-                      {t('bridge.sourceLabel')} (Archicad)
-                    </div>
-                  </div>
-                )}
-
-                <div className="absolute top-2 right-2 bg-black/70 backdrop-blur-sm text-[9px] font-mono px-2 py-0.5 rounded text-emerald-400 border border-emerald-500/20">
-                  {t('bridge.renderLabel')}
-                </div>
-
-                {/* Slider bar */}
-                <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)] cursor-ew-resize"
-                  style={{ left: `${sliderPosition}%` }}
-                >
-                  <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white text-black flex items-center justify-center text-[9px] font-bold shadow-md">
-                    ↔
-                  </div>
-                </div>
-
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={sliderPosition}
-                  onChange={(e) => setSliderPosition(Number(e.target.value))}
-                  className="absolute inset-0 opacity-0 cursor-ew-resize w-full h-full z-10"
-                />
-              </div>
-
-              {/* Action Buttons for Imported Result */}
-              <div className="grid grid-cols-2 gap-2">
-              <button onClick={handleApproveDesign} className="w-full flex items-center justify-center gap-2 py-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-[11px] font-semibold text-emerald-200">
-                <CheckSquare className="w-3.5 h-3.5" />
-                {t('bridge.approveAsMaster')}
-              </button>
-              <button onClick={() => { void handleSaveDesignVariant(); }} className="w-full flex items-center justify-center gap-2 py-2 rounded-lg border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-[11px] font-semibold text-amber-100">
-                <Layers className="w-3.5 h-3.5" />
-                {t('bridge.saveVariant')}
-              </button>
-              </div>
-              <div className="flex items-center space-x-2 pt-1">
-                <button
-                  onClick={() => {
-                    const link = document.createElement('a');
-                    link.href = `data:${importedResult.mimeType};base64,${importedResult.imageBase64}`;
-                    const extension = importedResult.mimeType === 'image/jpeg' ? 'jpg' : importedResult.mimeType === 'image/webp' ? 'webp' : 'png';
-                    link.download = `Gemini_Render_${Date.now()}.${extension}`;
-                    link.click();
-                  }}
-                  className="flex-1 flex items-center justify-center space-x-1.5 py-2 px-3 rounded-lg bg-studio-surfaceLight hover:bg-studio-surfaceHover border border-studio-border text-xs font-medium text-white transition-all"
-                >
-                  <Download className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>{t('bridge.saveImage')}</span>
-                </button>
-
-                {onNavigateStudio && (
-                  <button
-                    onClick={onNavigateStudio}
-                    className="flex-1 flex items-center justify-center space-x-1.5 py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition-all shadow-sm"
-                  >
-                    <span>{t('bridge.toGenerationStudio')}</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-center p-6 border border-studio-border/50 rounded-xl bg-studio-surfaceLight/30 text-studio-textSubtle">
-              <ImageIcon className="w-8 h-8 opacity-40 mb-2" />
-              <span className="text-xs">{t('bridge.waitingResult')}</span>
-              <span className="text-[10px] mt-1 max-w-[200px] leading-relaxed">
-                {t('bridge.waitingHint')}
-              </span>
-            </div>
-          )}
-        </div>
+          {(busy || errorMessage || bridgeMessage) && <div className="bridge-feedback" role={errorMessage ? 'alert' : 'status'}>
+            {busy ? t('bridgeFlow.working') : errorMessage ? <span className="bridge-error">{errorMessage}</span> : <><Check size={16} />{bridgeMessage}</>}
+          </div>}
+          <footer className="bridge-footer">
+            {step !== 'source' ? <button className={buttonClass} disabled={busy} onClick={() => goTo(steps[steps.indexOf(step) - 1])}><ArrowLeft size={16} />{t('bridgeFlow.back')}</button> : <span />}
+            {step === 'source' && ready && <button className={primaryClass} disabled={busy} onClick={() => goTo('design')}>{t('bridgeFlow.nextDesign')}<ArrowRight size={17} /></button>}
+            {step === 'design' && <button className={primaryClass} disabled={busy || !ready || !generatedPrompt.trim()} onClick={() => {
+              if (pending && pending.prompt !== generatedPrompt) setPending(null);
+              goTo('gemini');
+            }}>{t('bridgeFlow.nextGemini')}<ArrowRight size={17} /></button>}
+          </footer>
+        </section>
       </div>
     </div>
   );

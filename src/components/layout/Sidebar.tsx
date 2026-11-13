@@ -18,11 +18,12 @@ export type ActiveTab = 'studio' | 'gemini_bridge' | 'projects' | 'history' | 't
 
 interface SidebarProps {
   activeTab: ActiveTab;
+  expertMode: boolean;
   onTabChange: (tab: ActiveTab) => void;
   onNewProject: () => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onNewProject }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ activeTab, expertMode, onTabChange, onNewProject }) => {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('studio_sidebar_collapsed') === 'true');
   useEffect(() => {
@@ -32,18 +33,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onNewP
     {
       title: t('sidebar.workspace'),
       items: [
-        { id: 'studio' as ActiveTab, label: t('sidebar.generation'), icon: Wand2 },
         { id: 'gemini_bridge' as ActiveTab, label: t('sidebar.geminiBridge'), icon: Globe },
         { id: 'projects' as ActiveTab, label: t('sidebar.myProjects'), icon: FolderKanban },
-      ],
-    },
-    {
-      title: t('sidebar.tools'),
-      items: [
-        { id: 'training' as ActiveTab, label: t('sidebar.loraStudio'), icon: Cpu },
         { id: 'history' as ActiveTab, label: t('sidebar.history'), icon: History },
       ],
     },
+    ...(expertMode ? [{
+      title: t('sidebar.tools'),
+      items: [
+        { id: 'studio' as ActiveTab, label: t('sidebar.generation'), icon: Wand2 },
+        { id: 'training' as ActiveTab, label: t('sidebar.loraStudio'), icon: Cpu },
+      ],
+    }] : []),
   ];
 
   return (
@@ -83,6 +84,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onNewP
                     onClick={() => onTabChange(item.id)}
                     title={item.label}
                     aria-label={item.label}
+                    aria-current={isActive ? 'page' : undefined}
                     className={`w-full flex items-center ${collapsed ? 'justify-center' : 'gap-3'} max-[900px]:justify-center px-3 py-2.5 rounded-lg text-xs font-medium transition-colors ${
                       isActive
                         ? 'bg-studio-accent/12 text-studio-text ring-1 ring-inset ring-studio-accent/25'

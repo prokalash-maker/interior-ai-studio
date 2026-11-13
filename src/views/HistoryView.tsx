@@ -7,10 +7,10 @@ import { GenerationRecord, Project } from '../types/project';
 import { dbService } from '../services/db';
 import { StorageService } from '../services/storageService';
 import { useI18n } from '../i18n/i18nContext';
-import { UpscaleModal } from '../components/UpscaleModal';
+import { CloudUpscalePanel } from '../components/CloudUpscalePanel';
 import { ImageComparisonSlider } from '../components/ImageComparisonSlider';
 
-export const HistoryView: React.FC = () => {
+export const HistoryView: React.FC<{ expertMode: boolean; onSettings: () => void }> = ({ expertMode, onSettings }) => {
   const { t, language } = useI18n();
   const [generations, setGenerations] = useState<GenerationRecord[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -31,12 +31,12 @@ export const HistoryView: React.FC = () => {
     Promise.all([dbService.getAllGenerations(), dbService.getAllProjects()]).then(([records, projectRows]) => {
       if (!active) return;
       const sorted = [...records].sort((a, b) => b.createdAt - a.createdAt);
-      setGenerations(sorted);
+      setGenerations(expertMode ? sorted : sorted.filter((record) => record.provider === 'gemini_bridge'));
       setProjects(projectRows);
       setSelectedGenerationId((current) => current && sorted.some((record) => record.id === current) ? current : (sorted[0]?.id || ''));
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, []);
+  }, [expertMode]);
 
   const visibleGenerations = useMemo(
     () => selectedProjectId === 'all' ? generations : generations.filter((record) => record.projectId === selectedProjectId),
@@ -74,7 +74,12 @@ export const HistoryView: React.FC = () => {
   };
 
   const handleExport = (record: GenerationRecord) => {
-    if (record.outputImageBase64) StorageService.exportImage(record.outputImageBase64, `Render_${record.styleId}_${record.id}`, 'png');
+    if (!record.outputImageBase64) return;
+    const ext = record.outputImageBase64.match(/^data:image\/(jpeg|webp|png);base64,/)?.[1] || 'png';
+    const link = document.createElement('a');
+    link.href = record.outputImageBase64;
+    link.download = `Render_${record.createdAt}.${ext === 'jpeg' ? 'jpg' : ext}`;
+    link.click();
   };
 
   const handleDelete = async (record: GenerationRecord) => {
@@ -239,7 +244,7 @@ export const HistoryView: React.FC = () => {
               <div className="grid grid-cols-2 gap-2">
                 <ActionButton onClick={() => void handleCopy(selectedGeneration)} icon={copiedId === selectedGeneration.id ? <Check /> : <Copy />} label={copiedId === selectedGeneration.id ? t('action.copied') : t('action.copy')} />
                 <ActionButton onClick={() => setUpscalingRecord(selectedGeneration)} icon={<Sparkles />} label={t('history.upscale')} accent />
-                <ActionButton onClick={() => handleExport(selectedGeneration)} icon={<Download />} label={t('history.exportPng')} accent />
+                <ActionButton onClick={() => handleExport(selectedGeneration)} icon={<Download />} label={t('bridge.saveImage')} accent />
                 <ActionButton onClick={() => void handleDelete(selectedGeneration)} icon={<Trash2 />} label={t('history.deleteRender')} danger />
               </div>
             </div>}
@@ -257,7 +262,18 @@ export const HistoryView: React.FC = () => {
         </div>
       </div>}
 
-      {upscalingRecord && <UpscaleModal isOpen onClose={() => setUpscalingRecord(null)} imageBase64={upscalingRecord.outputImageBase64 || ''} sourceWidth={upscalingRecord.width || 1344} sourceHeight={upscalingRecord.height || 768} promptUsed={upscalingRecord.prompt || ''} />}
+      {upscalingRecord?.outputImageBase64 && <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <section className="bridge-card w-full max-w-2xl max-h-[90vh] overflow-y-auto" role="dialog" aria-modal="true" aria-label={t('cloudUpscale.title')}>
+          <button className="bridge-button self-end" onClick={() => setUpscalingRecord(null)}>{t('action.close')}</button>
+          <CloudUpscalePanel onSettings={onSettings} result={{
+            imageBase64: upscalingRecord.outputImageBase64,
+            mimeType: upscalingRecord.outputImageBase64.match(/^data:(image\/[\w.+-]+);base64,/)?.[1] || 'image/png',
+            width: upscalingRecord.width,
+            height: upscalingRecord.height,
+            timestamp: upscalingRecord.createdAt,
+          }} />
+        </section>
+      </div>}
     </div>
   );
 };

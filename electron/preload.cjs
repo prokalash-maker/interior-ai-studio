@@ -19,6 +19,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyImageToClipboard: (base64Data) => ipcRenderer.invoke('clipboard:copyImage', base64Data),
   openGeminiBridgeWindow: () => ipcRenderer.invoke('gemini:openWindow'),
   listGeminiDownloads: () => ipcRenderer.invoke('gemini:listDownloads'),
+  listRecentGeminiImages: (mode, since) => ipcRenderer.invoke('gemini:recentImages', mode, since),
+  readRecentGeminiImage: (mode, since, filePath) => ipcRenderer.invoke('gemini:readRecentImage', mode, since, filePath),
+  readGeminiClipboardImage: () => ipcRenderer.invoke('gemini:clipboardImage'),
+  isCloudUpscaleConfigured: () => ipcRenderer.invoke('upscale:configured'),
+  configureCloudUpscale: (credentials) => ipcRenderer.invoke('upscale:configure', credentials),
+  runCloudUpscale: (base64, mime) => ipcRenderer.invoke('upscale:run', base64, mime),
   saveGeminiSourceTemp: (fileName, base64Data, mimeType) => ipcRenderer.invoke('gemini:saveSourceTemp', fileName, base64Data, mimeType),
   readGeminiDownloadedImage: (filePath) => ipcRenderer.invoke('gemini:readDownloadedImage', filePath),
   onGeminiImageDownloaded: (callback) => {

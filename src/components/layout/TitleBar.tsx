@@ -6,6 +6,7 @@ import { useI18n } from '../../i18n/i18nContext';
 import { LanguageSelector } from '../LanguageSelector';
 
 interface TitleBarProps {
+  expertMode: boolean;
   currentProjectName?: string;
   onOpenSettings: () => void;
   onOpenAuth: () => void;
@@ -13,6 +14,7 @@ interface TitleBarProps {
 }
 
 export const TitleBar: React.FC<TitleBarProps> = ({
+  expertMode,
   currentProjectName,
   onOpenSettings,
   onOpenAuth,
@@ -32,6 +34,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 
   // Poll ComfyUI live status every 4 seconds
   useEffect(() => {
+    if (!expertMode) return;
     let isMounted = true;
     const checkStatus = async () => {
       if (window.electronAPI?.getComfyUIStatus) {
@@ -55,7 +58,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       isMounted = false;
       clearInterval(interval);
     };
-  }, [isStartingComfy]);
+  }, [expertMode, isStartingComfy]);
 
   const handleLaunchComfyUI = async () => {
     setIsStartingComfy(true);
@@ -134,7 +137,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       {/* Right: ComfyUI Status, Language Selector, Auth Profile & Windows Window Controls */}
       <div className="flex items-center space-x-2.5 max-[1100px]:space-x-1.5">
         {/* ComfyUI Live Status Pill */}
-        <div className="flex items-center space-x-1.5 bg-studio-bg border border-studio-border px-2 py-0.5 rounded-lg text-[10px] font-mono max-[700px]:hidden">
+        {expertMode && <div className="flex items-center space-x-1.5 bg-studio-bg border border-studio-border px-2 py-0.5 rounded-lg text-[10px] font-mono max-[700px]:hidden">
           <Cpu className="w-3 h-3 text-studio-cyan" />
           <span>ComfyUI:</span>
           {comfyStatus === 'online' ? (
@@ -173,7 +176,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
               <span className="text-studio-cyan underline text-[9px] ml-0.5 font-bold">{t('titlebar.start')}</span>
             </button>
           )}
-        </div>
+        </div>}
 
         {/* Quick Global AI 4K Upscaler Trigger */}
         {onOpenUpscale && (
@@ -191,7 +194,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         <LanguageSelector />
 
         {/* User Account Chip */}
-        {authState.isAuthenticated && authState.user ? (
+        {expertMode && (authState.isAuthenticated && authState.user ? (
           <button
             onClick={onOpenSettings}
             className="flex items-center space-x-1.5 px-2 py-1 rounded bg-studio-surfaceHover hover:bg-studio-border text-studio-text transition-colors"
@@ -224,7 +227,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             <User className="w-3 h-3 text-studio-textSubtle" />
             <span className="text-[11px]">{t('settings.accountTitle')}</span>
           </button>
-        )}
+        ))}
 
         {/* Window controls (Only if in Electron) */}
         {window.electronAPI && (

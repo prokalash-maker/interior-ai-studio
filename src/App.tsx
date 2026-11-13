@@ -12,14 +12,17 @@ const UpscaleModal = lazy(() => import('./components/UpscaleModal').then((module
 import { Project, RoomType } from './types/project';
 import { dbService } from './services/db';
 import { geminiProvider } from './services/ai/GeminiProvider';
-import { authService } from './services/authService';
+import { WorkspaceSettings } from './views/WorkspaceSettings';
 import { ROOM_TYPES } from './services/promptBuilder';
 import { X } from 'lucide-react';
 import { useI18n } from './i18n/i18nContext';
 
 export const App: React.FC = () => {
   const { t, language } = useI18n();
-  const [activeTab, setActiveTab] = useState<ActiveTab>('studio');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('gemini_bridge');
+  const [expertMode, setExpertMode] = useState(() => localStorage.getItem('visual_ai_expert') === 'true');
+  const [advancedSettings, setAdvancedSettings] = useState(false);
+  const [projectsLoading, setProjectsLoading] = useState(true);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState<boolean>(false);
@@ -31,7 +34,7 @@ export const App: React.FC = () => {
   const [newProjectRoomType, setNewProjectRoomType] = useState<RoomType>('living_room');
 
   useEffect(() => {
-    // 1. Check API Key
+    if (!expertMode) return;
     const checkApiKey = async () => {
       let key = '';
       if (window.electronAPI) {
@@ -43,41 +46,49 @@ export const App: React.FC = () => {
         geminiProvider.setApiKey(key);
       }
     };
-    checkApiKey();
+    void checkApiKey().catch((error) => console.error('Could not load Gemini API settings', error));
+  }, [expertMode]);
 
-    // 2. Check Auth Status: If first launch and not authenticated, show welcome auth modal
-    void authService.whenReady().then(() => {
-      const authState = authService.getState();
-      if (!authState.isAuthenticated && !authState.isGuest) setIsAuthModalOpen(true);
-    });
-
-    // 3. Load or initialize default project
-    dbService.getAllProjects().then((projects) => {
+  useEffect(() => {
+    let cancelled = false;
+    void dbService.getAllProjects().then(async (projects) => {
+      if (cancelled) return;
       if (projects.length > 0) {
         setCurrentProject(projects[0]);
       } else if (localStorage.getItem('interior_ai_projects_cleared') !== 'true') {
         // Create initial default project
         const defaultProj: Project = {
           id: 'proj_' + Date.now(),
-          name: 'Archicad // Perspective 01',
-          description: 'Default interior visualization project',
+          name: t('bridgeFlow.firstProject'),
           roomType: 'living_room',
           createdAt: Date.now(),
           updatedAt: Date.now(),
         };
-        dbService.saveProject(defaultProj);
-        setCurrentProject(defaultProj);
+        await dbService.saveProject(defaultProj);
+        if (!cancelled) setCurrentProject(defaultProj);
       }
-    });
+    }).finally(() => { if (!cancelled) setProjectsLoading(false); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
+    if (!expertMode) return;
     const unsubscribe = window.electronAPI?.onArchicadFileDetected((event) => {
       setPendingArchicadFile(event.path);
       setActiveTab('studio');
     });
     return () => unsubscribe?.();
-  }, []);
+  }, [expertMode]);
+
+  const changeMode = (enabled: boolean) => {
+    localStorage.setItem('visual_ai_expert', String(enabled));
+    setExpertMode(enabled);
+    if (!enabled) {
+      setAdvancedSettings(false);
+      setPendingArchicadFile(null);
+      setIsGlobalUpscaleOpen(false);
+    }
+  };
 
   const handleCreateNewProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -96,12 +107,12 @@ export const App: React.FC = () => {
     setCurrentProject(newProj);
     setIsNewProjectModalOpen(false);
     setNewProjectName('');
-    setActiveTab('studio');
+    setActiveTab('gemini_bridge');
   };
 
   const handleSelectProject = (project: Project) => {
     setCurrentProject(project);
-    setActiveTab('studio');
+    setActiveTab('gemini_bridge');
   };
 
   return (
@@ -109,9 +120,10 @@ export const App: React.FC = () => {
       {/* Native-feel Studio Titlebar */}
       <TitleBar
         currentProjectName={currentProject?.name}
+        expertMode={expertMode}
         onOpenSettings={() => setActiveTab('settings')}
         onOpenAuth={() => setIsAuthModalOpen(true)}
-        onOpenUpscale={() => setIsGlobalUpscaleOpen(true)}
+        onOpenUpscale={expertMode ? () => setIsGlobalUpscaleOpen(true) : undefined}
       />
 
       {/* Main App Body */}
@@ -119,6 +131,7 @@ export const App: React.FC = () => {
         {/* Navigation Sidebar */}
         <Sidebar
           activeTab={activeTab}
+          expertMode={expertMode}
           onTabChange={setActiveTab}
           onNewProject={() => setIsNewProjectModalOpen(true)}
         />
@@ -126,23 +139,28 @@ export const App: React.FC = () => {
         {/* Dynamic View Panes */}
         <main className="flex-1 flex overflow-hidden">
           <Suspense fallback={<div className="flex-1 grid place-items-center text-studio-textMuted text-sm">{t('app.loadingView')}</div>}>
-          {activeTab === 'studio' && (
+          {expertMode && activeTab === 'studio' && (
             <GenerationStudioView
               currentProject={currentProject}
               onUpdateProject={setCurrentProject}
               onNavigateSettings={() => setActiveTab('settings')}
+              onNavigateBridge={() => setActiveTab('gemini_bridge')}
               pendingArchicadFile={pendingArchicadFile}
               onArchicadFileLoaded={() => setPendingArchicadFile(null)}
             />
           )}
 
-          {activeTab === 'gemini_bridge' && (
+          {activeTab === 'gemini_bridge' && (projectsLoading
+            ? <div role="status" className="flex-1 grid place-items-center">{t('app.loadingView')}</div>
+            : (
             <GeminiBridgeView
+              key={currentProject?.id || 'no-project'}
               currentProject={currentProject}
               onUpdateProject={setCurrentProject}
-              onNavigateStudio={() => setActiveTab('studio')}
+              onNewProject={() => setIsNewProjectModalOpen(true)}
+              onNavigateSettings={() => { setAdvancedSettings(false); setActiveTab('settings'); }}
             />
-          )}
+          ))}
 
           {activeTab === 'projects' && (
             <ProjectsView
@@ -152,11 +170,16 @@ export const App: React.FC = () => {
             />
           )}
 
-          {activeTab === 'training' && <TrainingStudioView />}
+          {expertMode && activeTab === 'training' && <TrainingStudioView />}
 
-          {activeTab === 'history' && <HistoryView />}
+          {activeTab === 'history' && <HistoryView expertMode={expertMode} onSettings={() => { setAdvancedSettings(false); setActiveTab('settings'); }} />}
 
-          {activeTab === 'settings' && <SettingsView />}
+          {activeTab === 'settings' && (expertMode && advancedSettings
+            ? <div className="flex flex-1 min-w-0 flex-col overflow-hidden">
+                <button className="bridge-button self-start m-3" onClick={() => setAdvancedSettings(false)}>{t('workspace.basicSettings')}</button>
+                <SettingsView />
+              </div>
+            : <WorkspaceSettings expertMode={expertMode} onModeChange={changeMode} onAdvanced={() => setAdvancedSettings(true)} />)}
           </Suspense>
         </main>
       </div>

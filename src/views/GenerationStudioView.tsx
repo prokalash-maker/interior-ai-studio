@@ -65,6 +65,7 @@ interface GenerationStudioViewProps {
   currentProject: Project | null;
   onUpdateProject: (p: Project) => void;
   onNavigateSettings: () => void;
+  onNavigateBridge: () => void;
   pendingArchicadFile?: string | null;
   onArchicadFileLoaded?: () => void;
 }
@@ -73,6 +74,7 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
   currentProject,
   onUpdateProject,
   onNavigateSettings,
+  onNavigateBridge,
   pendingArchicadFile,
   onArchicadFileLoaded,
 }) => {
@@ -436,6 +438,10 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
 
   // Run Generation with Cost & Budget Validation
   const handleStartGeneration = (targetRes: Resolution = resolution) => {
+    if (activeProviderId === 'gemini_bridge') {
+      onNavigateBridge();
+      return;
+    }
     if (!sourceImage) {
       setErrorMsg(t('studio.sourceRequired'));
       return;
@@ -601,6 +607,10 @@ export const GenerationStudioView: React.FC<GenerationStudioViewProps> = ({
 
   // Iterative refinement (multi-turn instruction)
   const handleRefine = async () => {
+    if (activeProviderId === 'gemini_bridge') {
+      onNavigateBridge();
+      return;
+    }
     if (!latestResult || !refinementText.trim()) return;
     const provider = providerRegistry.getProvider(activeProviderId) || geminiProvider;
 

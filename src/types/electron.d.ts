@@ -1,6 +1,13 @@
 import { Project, GenerationRecord } from './project';
 import { GoogleUser } from './auth';
 
+export interface GeminiDownload {
+  filePath: string;
+  fileName: string;
+  byteLength: number;
+  modifiedAt: number;
+}
+
 export interface ElectronAPI {
   // Window controls
   minimizeWindow: () => Promise<void>;
@@ -20,6 +27,12 @@ export interface ElectronAPI {
   copyImageToClipboard: (base64Data: string) => Promise<boolean>;
   openGeminiBridgeWindow: () => Promise<{ success: boolean; error?: string }>;
   listGeminiDownloads: () => Promise<{ success: boolean; files: Array<{ filePath: string; fileName: string; byteLength: number; modifiedAt: number }>; error?: string }>;
+  listRecentGeminiImages: (mode: 'browser' | 'embedded', since: number) => Promise<GeminiDownload[]>;
+  readRecentGeminiImage: (mode: 'browser' | 'embedded', since: number, filePath: string) => Promise<{ fileName: string; mimeType: string; base64: string } | null>;
+  readGeminiClipboardImage: () => Promise<string | null>;
+  isCloudUpscaleConfigured: () => Promise<boolean>;
+  configureCloudUpscale: (credentials: { cloud: string; key: string; secret: string } | null) => Promise<boolean>;
+  runCloudUpscale: (base64: string, mime: string) => Promise<{ base64?: string; error?: string; cleanupFailed?: boolean }>;
   saveGeminiSourceTemp: (fileName: string, base64Data: string, mimeType: string) => Promise<{ success: boolean; filePath?: string; error?: string }>;
   readGeminiDownloadedImage: (filePath: string) => Promise<{ success: boolean; fileName?: string; filePath?: string; mimeType?: string; base64?: string; byteLength?: number; error?: string }>;
   onGeminiImageDownloaded: (callback: (event: { filePath: string; fileName: string; byteLength: number }) => void) => () => void;

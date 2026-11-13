@@ -31,6 +31,77 @@
 }
 
 @layer components {
+  .bridge-workspace { @apply bg-studio-bg text-studio-text; }
+  .bridge-container { @apply mx-auto max-w-[1140px] px-6 py-8 lg:px-10 lg:py-10; }
+  .bridge-header { @apply mb-6 flex flex-wrap items-end justify-between gap-4; }
+  .bridge-header h1 { @apply mt-2 mb-2 text-3xl font-semibold tracking-tight lg:text-[42px] lg:leading-tight; }
+  .bridge-eyebrow { @apply flex items-center gap-2 text-sm font-medium text-studio-accent; }
+  .bridge-muted { @apply text-sm leading-relaxed text-studio-textMuted; }
+  .bridge-project { @apply inline-flex max-w-full items-center gap-2 rounded-full border border-studio-border bg-studio-surface px-4 py-2 text-sm text-studio-textMuted; }
+  .bridge-project span { @apply truncate; }
+  .bridge-steps { @apply mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4; }
+  .bridge-steps button { @apply flex min-h-12 items-center gap-2 rounded-xl border border-studio-border bg-studio-surface px-3 py-2 text-left text-sm font-medium text-studio-textMuted transition-colors hover:bg-studio-surfaceHover disabled:opacity-45; }
+  .bridge-steps button span { @apply grid h-6 w-6 shrink-0 place-items-center rounded-full bg-studio-surfaceHover text-xs; }
+  .bridge-steps button[aria-current] { @apply border-studio-accent/50 bg-studio-accent/10 text-studio-text; }
+  .bridge-steps button[aria-current] span { @apply bg-studio-accent text-studio-bg; }
+  .bridge-card { @apply flex flex-col gap-5 rounded-2xl border border-studio-border bg-studio-surface p-5 shadow-sm md:p-7; }
+  .bridge-card h2 { @apply text-xl font-semibold tracking-tight; }
+  .bridge-card h3 { @apply font-semibold; }
+  .bridge-card-heading { @apply space-y-2; }
+  .bridge-source-layout { @apply grid gap-5 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]; }
+  .bridge-source-layout:has(> :last-child:empty) { @apply grid-cols-1; }
+  .bridge-source-layout > :last-child:empty { display: none; }
+  .bridge-dropzone { @apply flex min-h-52 w-full flex-col items-center justify-center gap-2 overflow-hidden rounded-xl border border-dashed border-studio-borderLight bg-studio-bg p-5 text-center text-sm transition-colors hover:border-studio-accent hover:bg-studio-accent/5 disabled:opacity-50; }
+  .bridge-dropzone.is-dragging { @apply border-studio-accent bg-studio-accent/10; }
+  .bridge-dropzone > svg { @apply mb-1 text-studio-accent; }
+  .bridge-dropzone > span { @apply text-studio-textMuted; }
+  .bridge-dropzone > img { @apply max-h-[360px] w-full object-contain; }
+  .bridge-result-drop { @apply min-h-32; }
+  .bridge-button { @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-studio-borderLight bg-studio-surfaceLight px-4 py-2 text-center text-sm font-medium text-studio-text transition-colors hover:bg-studio-surfaceHover disabled:cursor-default disabled:opacity-45; }
+  .bridge-button svg { @apply shrink-0; }
+  .bridge-primary { @apply border-transparent bg-studio-accent font-semibold text-studio-bg hover:bg-studio-accentHover; }
+  .bridge-stack { @apply flex min-w-0 flex-col gap-4; }
+  .bridge-actions { @apply flex flex-wrap items-center gap-2; }
+  .bridge-field { @apply flex min-w-0 flex-col gap-2 text-sm font-medium; }
+  .bridge-field-grid { @apply grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3; }
+  .bridge-choice { @apply flex flex-col gap-1 rounded-xl border border-studio-border bg-studio-bg p-3 text-left text-sm hover:border-studio-borderLight; }
+  .bridge-choice span { @apply text-studio-textMuted; }
+  .bridge-choice[aria-pressed="true"], .bridge-chip[aria-pressed="true"] { @apply border-studio-accent bg-studio-accent/10; }
+  .bridge-chip { @apply rounded-full border border-studio-border bg-studio-bg px-3 py-2 text-sm hover:border-studio-accent; }
+  .bridge-chips { @apply flex flex-wrap gap-2; }
+  .bridge-details { @apply rounded-xl border border-studio-border bg-studio-bg/45; }
+  .bridge-details > summary { @apply flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-sm font-semibold; }
+  .bridge-details > summary::-webkit-details-marker { display: none; }
+  .bridge-details[open] > summary svg { transform: rotate(180deg); }
+  .bridge-details > div { @apply px-4 pb-4; }
+  .bridge-instructions { @apply grid gap-3; counter-reset: gemini; }
+  .bridge-instructions li { @apply flex flex-wrap items-center gap-3 rounded-xl border border-studio-border bg-studio-bg/55 px-4 py-3 text-sm; counter-increment: gemini; }
+  .bridge-instructions li::before { @apply grid h-8 w-8 shrink-0 place-items-center rounded-full bg-studio-accent/15 font-semibold text-studio-accent; content: counter(gemini); }
+  .bridge-instructions li div { @apply min-w-[190px] flex-1; }
+  .bridge-instructions li p { @apply mt-1 text-studio-textMuted; }
+  .bridge-downloads, .bridge-cloud { @apply rounded-xl border border-studio-accent/35 bg-studio-accent/5 p-4; }
+  .bridge-download { @apply mt-3 flex flex-wrap items-center justify-between gap-2; }
+  .bridge-download span { @apply inline-flex min-w-0 items-center gap-2 break-all text-sm; }
+  .bridge-comparison { @apply mx-auto w-full max-w-[800px] overflow-hidden rounded-xl border border-studio-border bg-studio-bg; }
+  .bridge-compare-images { @apply relative mx-auto max-h-[56vh] overflow-hidden; }
+  .bridge-compare-images img { @apply absolute inset-0 h-full w-full object-contain; }
+  .bridge-divider { @apply pointer-events-none absolute inset-y-0 w-px bg-studio-accent; }
+  .bridge-range { @apply flex items-center gap-3 p-3 text-sm text-studio-textMuted; }
+  .bridge-range input { @apply min-w-0 flex-1 accent-studio-accent; }
+  .bridge-feedback { @apply flex items-center gap-2 rounded-lg bg-studio-bg/75 px-4 py-3 text-sm text-studio-textMuted; }
+  .bridge-error { @apply text-sm text-red-300; }
+  .bridge-footer { @apply flex flex-wrap items-center justify-between gap-2; }
+  .bridge-footer:empty { display: none; }
+  .bridge-setting { @apply flex items-center justify-between gap-4; }
+  .bridge-setting p { @apply mt-1; }
+  .bridge-switch { @apply flex h-8 w-14 shrink-0 items-center rounded-full border border-studio-borderLight bg-studio-bg p-1; }
+  .bridge-switch span { @apply h-5 w-5 rounded-full bg-studio-textMuted transition-transform; }
+  .bridge-switch[aria-checked="true"] { @apply border-studio-accent bg-studio-accent/20; }
+  .bridge-switch[aria-checked="true"] span { @apply translate-x-6 bg-studio-accent; }
+  .bridge-workspace :is(button, a, summary, input, select, textarea):focus-visible { @apply outline outline-2 outline-offset-2 outline-studio-accent; }
+}
+
+@layer components {
   .studio-panel {
     @apply rounded-xl border border-studio-border bg-studio-surface shadow-sm;
   }

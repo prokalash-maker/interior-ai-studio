@@ -1,33 +1,16 @@
 import { GenerationResult } from '../../types/ai';
 
-export interface BridgeHandoffState {
-  sourceImageBase64: string | null;
-  sourceImageMimeType: string;
-  sourceFileName: string | null;
-  generatedPrompt: string;
-  lastCopiedPrompt: boolean;
-  lastCopiedImage: boolean;
-  tempFilePath?: string;
-}
-
 class GeminiBridgeService {
   /**
    * Opens the optional embedded Gemini window, which has its own persisted browser session.
    * First-time Google sign-in should use openGeminiExternal() in the system browser.
    */
-  async openGeminiWeb(customUrl: string = 'https://gemini.google.com/'): Promise<boolean> {
-    if ((window as any).electronAPI?.openGeminiBridgeWindow && customUrl === 'https://gemini.google.com/') {
-      const result = await (window as any).electronAPI.openGeminiBridgeWindow();
-      if (result?.success) return true;
-      console.error('Could not open embedded Gemini:', result?.error);
+  async openGeminiWeb(): Promise<boolean> {
+    try {
+      return (await window.electronAPI?.openGeminiBridgeWindow())?.success === true;
+    } catch {
       return false;
     }
-    if (typeof window !== 'undefined') {
-      // Browser-only fallback for development outside Electron.
-      window.open(customUrl, '_blank');
-      return true;
-    }
-    return false;
   }
 
   async openGeminiExternal(): Promise<boolean> {
@@ -72,37 +55,29 @@ class GeminiBridgeService {
    * Copies an image directly into the system clipboard so the user can paste (Ctrl + V)
    * into the Gemini prompt box without manual file uploading.
    */
-  async copyImageToClipboard(base64Data: string, mimeType: string = 'image/png'): Promise<boolean> {
+  async copyImageToClipboard(base64Data: string, mimeType = 'image/png'): Promise<boolean> {
     try {
-      // 1. Electron Native Clipboard Integration (Most reliable for desktop)
-      if ((window as any).electronAPI?.copyImageToClipboard) {
-        const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
-        const success = await (window as any).electronAPI.copyImageToClipboard(cleanBase64);
-        if (success) return true;
-      }
+      const cleanBase64 = base64Data.replace(/^data:image\/[\w.+-]+;base64,/, '');
+      const api = window.electronAPI;
+      if (api && await api.copyImageToClipboard(cleanBase64)) return true;
 
-      // 2. Standard Web ClipboardItem API
-      if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
-        const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
-        const byteCharacters = atob(cleanBase64);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: mimeType });
-
-        await navigator.clipboard.write([
-          new ClipboardItem({
-            [mimeType]: blob,
-          }),
-        ]);
-        return true;
-      }
-    } catch (err) {
-      console.warn('Standard image clipboard copy failed, attempting fallback download:', err);
+      const image = new Image();
+      image.src = `data:${mimeType};base64,${cleanBase64}`;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext('2d');
+      if (!context) return false;
+      context.drawImage(image, 0, 0);
+      if (api) return api.copyImageToClipboard(canvas.toDataURL('image/png'));
+      const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+      if (!png || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return false;
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+      return true;
+    } catch {
+      return false;
     }
-    return false;
   }
 
   /**
@@ -114,10 +89,11 @@ class GeminiBridgeService {
       const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
       
       // Store handoff files under app data instead of assuming a particular Windows user path.
-      if ((window as any).electronAPI?.saveGeminiSourceTemp && (window as any).electronAPI?.openFolderInExplorer) {
-        const saved = await (window as any).electronAPI.saveGeminiSourceTemp(defaultName, cleanBase64, mimeType);
+      const api = window.electronAPI;
+      if (api?.saveGeminiSourceTemp && api.openFolderInExplorer) {
+        const saved = await api.saveGeminiSourceTemp(defaultName, cleanBase64, mimeType);
         if (!saved?.success || !saved.filePath) return false;
-        await (window as any).electronAPI.openFolderInExplorer(saved.filePath);
+        await api.openFolderInExplorer(saved.filePath);
         return true;
       }
 
@@ -144,46 +120,36 @@ class GeminiBridgeService {
     mimeType: string;
     width: number;
     height: number;
-    fileName: string;
   }> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const fullDataUrl = reader.result as string;
-        const cleanBase64 = fullDataUrl.replace(/^data:image\/[\w+.-]+;base64,/, '');
-        const extension = file.name.toLowerCase().match(/\.(png|jpe?g|webp)$/)?.[1];
-        const mimeType = ['image/png', 'image/jpeg', 'image/webp'].includes(file.type)
-          ? file.type
-          : extension === 'jpg' || extension === 'jpeg'
-          ? 'image/jpeg'
-          : extension === 'webp'
-          ? 'image/webp'
-          : 'image/png';
+    if (file.size === 0 || file.size > 50 * 1024 * 1024) throw new Error('invalid-image');
+    const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+    const header = String.fromCharCode(...bytes);
+    const mimeType = header.startsWith('\x89PNG\r\n\x1a\n') ? 'image/png'
+      : header.startsWith('\xff\xd8\xff') ? 'image/jpeg'
+      : header.startsWith('RIFF') && header.slice(8) === 'WEBP' ? 'image/webp'
+      : null;
+    if (!mimeType) throw new Error('invalid-image');
 
-        const img = new Image();
-        img.onload = () => {
-          resolve({
-            imageBase64: cleanBase64,
-            mimeType,
-            width: img.naturalWidth || 1024,
-            height: img.naturalHeight || 768,
-            fileName: file.name,
-          });
-        };
-        img.onerror = () => {
-          resolve({
-            imageBase64: cleanBase64,
-            mimeType,
-            width: 1024,
-            height: 768,
-            fileName: file.name,
-          });
-        };
-        img.src = fullDataUrl;
-      };
-      reader.onerror = (err) => reject(err);
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.src = url;
+    try {
+      await image.decode();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(file);
     });
+    return {
+      imageBase64: dataUrl.slice(dataUrl.indexOf(',') + 1),
+      mimeType,
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+    };
   }
 
   /**

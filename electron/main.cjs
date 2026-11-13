@@ -188,7 +188,7 @@ async function initDatabase() {
   saveDatabaseFile();
 }
 
-function saveDatabaseFile() {
+function saveDatabaseFile(requirePersistence = false) {
   if (!db || !dbPath) return;
   try {
     const data = db.export();
@@ -196,6 +196,7 @@ function saveDatabaseFile() {
     fs.writeFileSync(dbPath, buffer);
   } catch (err) {
     console.error('Failed to save SQLite file:', err);
+    if (requirePersistence) throw err;
   }
 }
 
@@ -240,6 +241,31 @@ function getGeminiDownloadRoot() {
   return dir;
 }
 
+const geminiImageExtensions = new Map([
+  ['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.webp', 'image/webp'],
+]);
+
+function isGeminiBrowserDownload(name) {
+  return /^gemini[_ -]generated[_ -]image/i.test(name);
+}
+
+async function getRecentGeminiImages(mode, since) {
+  if (!Number.isFinite(since) || since <= 0) return [];
+  const embedded = mode === 'embedded';
+  const root = embedded ? getGeminiDownloadRoot() : app.getPath('downloads');
+  const entries = await fs.promises.readdir(root, { withFileTypes: true });
+  const files = await Promise.all(entries.filter((entry) =>
+    entry.isFile() && geminiImageExtensions.has(path.extname(entry.name).toLowerCase()) &&
+    (embedded || isGeminiBrowserDownload(entry.name))
+  ).map(async (entry) => {
+    const filePath = path.join(root, entry.name);
+    const stat = await fs.promises.stat(filePath).catch(() => null);
+    if (!stat?.isFile() || stat.size <= 0 || stat.mtimeMs < since) return null;
+    return { filePath, fileName: entry.name, byteLength: stat.size, modifiedAt: stat.mtimeMs };
+  }));
+  return files.filter(Boolean).sort((a, b) => b.modifiedAt - a.modifiedAt).slice(0, 8);
+}
+
 async function openGeminiBridgeWindow() {
   if (geminiWindow && !geminiWindow.isDestroyed()) {
     geminiWindow.show();
@@ -256,7 +282,7 @@ async function openGeminiBridgeWindow() {
     if (!detectedExtension) return;
     const baseName = path.basename(originalName, path.extname(originalName)).replace(/[^a-zA-Z0-9_-]/g, '_').slice(-100) || `gemini-image-${Date.now()}`;
     const safeName = `${baseName}${detectedExtension}`;
-    const downloadPath = path.join(getGeminiDownloadRoot(), `${Date.now()}-${safeName}`);
+    const downloadPath = path.join(getGeminiDownloadRoot(), `${Date.now()}-${crypto.randomUUID()}-${safeName}`);
     item.setSavePath(downloadPath);
     item.once('done', (_downloadEvent, state) => {
       if (state !== 'completed' || !/\.(png|jpe?g|webp)$/i.test(downloadPath)) return;
@@ -291,7 +317,12 @@ async function openGeminiBridgeWindow() {
     return { action: 'deny' };
   });
   geminiWindow.on('closed', () => { geminiWindow = null; });
-  await geminiWindow.loadURL('https://gemini.google.com/');
+  try {
+    await geminiWindow.loadURL('https://gemini.google.com/');
+  } catch (error) {
+    if (geminiWindow && !geminiWindow.isDestroyed()) geminiWindow.close();
+    throw error;
+  }
   return true;
 }
 
@@ -334,6 +365,88 @@ function decryptData(ciphertext) {
 // ---------------- IPC Setup ----------------
 function setupIPC() {
   const rendererSecureKeys = new Set(['gemini_api_key', 'krea_api_key', 'google_oauth_client_id', 'google_oauth_client_secret', 'local_user_profile']);
+  const cloudinaryKey = 'cloudinary_upscale_credentials';
+  ipcMain.handle('upscale:configured', () => Boolean(readAuthRecord(cloudinaryKey)));
+  ipcMain.handle('upscale:configure', (_event, credentials) => {
+    if (credentials === null) {
+      db.run('DELETE FROM secure_kv WHERE key = ?', [cloudinaryKey]);
+      saveDatabaseFile(true);
+      return true;
+    }
+    if (!/^[a-z0-9_-]{1,64}$/i.test(credentials?.cloud || '') ||
+        !/^\d{8,30}$/.test(credentials?.key || '') ||
+        !/^[a-z0-9_-]{8,128}$/i.test(credentials?.secret || '')) return false;
+    writeAuthRecord(cloudinaryKey, JSON.stringify({ cloud: credentials.cloud, key: credentials.key, secret: credentials.secret }), true);
+    return true;
+  });
+  ipcMain.handle('upscale:run', async (_event, base64, mime) => {
+    const stored = readAuthRecord(cloudinaryKey);
+    if (!stored) return { error: 'setup' };
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(mime) ||
+        typeof base64 !== 'string' || base64.length > Math.ceil(10 * 1024 * 1024 * 4 / 3) + 4) return { error: 'size' };
+    const bytes = Buffer.from(base64, 'base64');
+    const image = nativeImage.createFromBuffer(bytes);
+    // Electron's native decoder does not handle all WebP files.
+    if (image.isEmpty() || bytes.length > 10 * 1024 * 1024) return { error: 'size' };
+    const { width, height } = image.getSize();
+    if (width * height > 2048 * 2048) return { error: 'size' };
+    const { cloud, key, secret } = JSON.parse(stored);
+    const publicId = 'visual-ai-' + crypto.randomUUID();
+    const base = 'https://api.cloudinary.com/v1_1/' + cloud + '/image/';
+    const call = (operation, fields, file) => {
+      const params = { ...fields, public_id: publicId, timestamp: String(Math.floor(Date.now() / 1000)), type: 'authenticated' };
+      const query = Object.keys(params).sort().map((name) => name + '=' + params[name]).join('&');
+      const signature = crypto.createHash('sha1').update(query + secret).digest('hex');
+      const form = new FormData();
+      for (const [name, value] of Object.entries({ ...params, api_key: key, signature })) form.set(name, value);
+      if (file) form.set('file', new Blob([file], { type: mime }), 'visualization.' + (mime === 'image/jpeg' ? 'jpg' : mime.split('/')[1]));
+      return fetch(base + operation, { method: 'POST', body: form, signal: AbortSignal.timeout(25000), redirect: 'error' });
+    };
+    let uploaded = false;
+    let output;
+    try {
+      const response = await call('upload', { overwrite: 'false' }, bytes);
+      if (response.status === 401 || response.status === 403) return { error: 'auth' };
+      if (response.status === 429) return { error: 'quota' };
+      if (!response.ok) return { error: 'service' };
+      uploaded = true;
+      const asset = await response.json();
+      if (!Number.isInteger(asset.version)) return { error: 'service' };
+      // Keep large 4× intermediates within the free plan's 25 MP delivery limit.
+      const ratio = Math.sqrt(25_000_000 / (width * height));
+      const fit = ratio < 4 ? '/c_limit,w_' + Math.floor(width * ratio) + ',h_' + Math.floor(height * ratio) : '';
+      const pathToSign = 'e_upscale' + fit + '/v' + asset.version + '/' + publicId + '.jpg';
+      const signature = crypto.createHash('sha1').update(pathToSign + secret).digest('base64url').slice(0, 8);
+      const url = 'https://res.cloudinary.com/' + cloud + '/image/authenticated/s--' + signature + '--/' + pathToSign;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const result = await fetch(url, { signal: AbortSignal.timeout(15000), redirect: 'error' });
+        if (result.status === 423 || result.status === 420) {
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+          continue;
+        }
+        if (result.status === 429) return { error: 'quota' };
+        if (!result.ok) return { error: 'service' };
+        const data = Buffer.from(await result.arrayBuffer());
+        if (data.length > 50 * 1024 * 1024) return { error: 'service' };
+        output = { base64: data.toString('base64') };
+        break;
+      }
+      if (!output) return { error: 'timeout' };
+    } catch {
+      return { error: 'service' };
+    } finally {
+      if (uploaded) {
+        let removed = false;
+        try {
+          const response = await call('destroy', { invalidate: 'true' });
+          const result = await response.json();
+          removed = response.ok && (result.result === 'ok' || result.result === 'not found');
+        } catch (_) {}
+        if (!removed && output) output.cleanupFailed = true;
+      }
+    }
+    return output;
+  });
   ipcMain.handle('gemini:openWindow', async () => {
     try { return { success: await openGeminiBridgeWindow() }; }
     catch (error) { return { success: false, error: error.message || 'Не удалось открыть Gemini.' }; }
@@ -353,6 +466,33 @@ function setupIPC() {
     } catch (error) {
       return { success: false, files: [], error: error.message || 'Не удалось получить загрузки Gemini.' };
     }
+  });
+
+  ipcMain.handle('gemini:recentImages', async (_event, mode, since) => {
+    try {
+      return await getRecentGeminiImages(mode, since);
+    } catch (_) {
+      return [];
+    }
+  });
+
+  ipcMain.handle('gemini:readRecentImage', async (_event, mode, since, filePath) => {
+    const files = await getRecentGeminiImages(mode, since).catch(() => []);
+    const file = files.find((entry) => entry.filePath === filePath);
+    if (!file || file.byteLength > 50 * 1024 * 1024) return null;
+    const root = await fs.promises.realpath(mode === 'embedded' ? getGeminiDownloadRoot() : app.getPath('downloads'));
+    const realPath = await fs.promises.realpath(file.filePath);
+    if (path.dirname(realPath).toLowerCase() !== root.toLowerCase()) return null;
+    const data = await fs.promises.readFile(realPath);
+    if (data.length !== file.byteLength) return null;
+    return { fileName: file.fileName, mimeType: geminiImageExtensions.get(path.extname(file.fileName).toLowerCase()), base64: data.toString('base64') };
+  });
+
+  ipcMain.handle('gemini:clipboardImage', () => {
+    const image = clipboard.readImage();
+    if (image.isEmpty()) return null;
+    const data = image.toPNG();
+    return data.length <= 50 * 1024 * 1024 ? data.toString('base64') : null;
   });
 
   ipcMain.handle('gemini:saveSourceTemp', async (_event, fileName, base64Data, mimeType = 'image/png') => {
@@ -1327,6 +1467,8 @@ function setupIPC() {
       const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
       const buffer = Buffer.from(cleanBase64, 'base64');
       const img = nativeImage.createFromBuffer(buffer);
+      // Chromium decodes WebP in the renderer, where the Bridge can retry as PNG.
+      if (img.isEmpty()) return false;
       clipboard.writeImage(img);
       return true;
     } catch (e) {
@@ -1382,7 +1524,7 @@ function setupIPC() {
   ipcMain.handle('db:execute', async (event, sql, params = []) => {
     try {
       db.run(sql, params);
-      saveDatabaseFile();
+      saveDatabaseFile(true);
       return { success: true };
     } catch (e) {
       console.error('db:execute error:', e, sql);
@@ -1436,9 +1578,9 @@ function setupIPC() {
       stmt.free();
     }
   };
-  const writeAuthRecord = (key, value) => {
+  const writeAuthRecord = (key, value, requirePersistence = false) => {
     db.run('INSERT OR REPLACE INTO secure_kv (key, value) VALUES (?, ?)', [key, encryptData(value)]);
-    saveDatabaseFile();
+    saveDatabaseFile(requirePersistence);
   };
   let googleOAuthInProgress = false;
 

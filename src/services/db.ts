@@ -98,10 +98,10 @@ class DatabaseService {
     return this.inMemoryProjects.find((p) => p.id === id) || null;
   }
 
-  async saveProject(project: Project): Promise<void> {
+  async saveProject(project: Project, requirePersistence = false): Promise<void> {
     if (window.electronAPI) {
       try {
-        await window.electronAPI.dbExecute(
+        const result = await window.electronAPI.dbExecute(
           `INSERT OR REPLACE INTO projects (id, name, description, room_type, created_at, updated_at, thumbnail_path, source_image_path, source_image_base64, material_references, views_json, approved_design_json, design_draft_json, design_variants_json)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
@@ -121,9 +121,11 @@ class DatabaseService {
             JSON.stringify(project.designVariants || []),
           ]
         );
+        if (!result.success) throw new Error(result.error);
         return;
       } catch (e) {
         console.error('db:saveProject error:', e);
+        if (requirePersistence) throw e;
       }
     }
 
@@ -162,10 +164,10 @@ class DatabaseService {
     localStorage.setItem('interior_ai_projects_cleared', 'true');
   }
 
-  async saveGeneration(record: GenerationRecord): Promise<void> {
+  async saveGeneration(record: GenerationRecord, requirePersistence = false): Promise<void> {
     if (window.electronAPI) {
       try {
-        await window.electronAPI.dbExecute(
+        const result = await window.electronAPI.dbExecute(
           `INSERT INTO generations (
             id, project_id, parent_id, view_id, source_image_path, source_image_base64,
             output_image_path, output_image_base64, prompt, style_id, room_type,
@@ -199,6 +201,7 @@ class DatabaseService {
             JSON.stringify(record.materialReferences || []),
           ]
         );
+        if (!result.success) throw new Error(result.error);
         // Also update project updated_at and thumbnail
         await window.electronAPI.dbExecute(
           `UPDATE projects SET updated_at = ?, thumbnail_path = ? WHERE id = ?`,
@@ -207,6 +210,7 @@ class DatabaseService {
         return;
       } catch (e) {
         console.error('db:saveGeneration error:', e);
+        if (requirePersistence) throw e;
       }
     }
 
